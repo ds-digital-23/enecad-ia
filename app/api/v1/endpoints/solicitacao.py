@@ -19,32 +19,36 @@ from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultad
 from core.deps import get_session, get_current_user
 from models_loader import loaded_models  # Importando os modelos carregados
 
-
-
 router = APIRouter()
 semaphore = asyncio.Semaphore(5)
 
+async def get_model(model_description: str):
+    for key, value in loaded_models.items():
+        if value['description'] == model_description:
+            return key
+    raise ValueError(f"Modelo com descrição {model_description} não encontrado")
 
-async def get_model(model_name: str):
-    return loaded_models.get(model_name)
-
-
-async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
+async def process_batch_images(images: List[str], modelos: List[str], confs: Dict[str, float]) -> Dict[str, Dict[str, Dict[str, float]]]:
     async with semaphore:
         detection_tasks = [get_model(modelo) for modelo in modelos]
-        loaded_models_instances = await asyncio.gather(*detection_tasks)
+        model_keys = await asyncio.gather(*detection_tasks)
+        loaded_models_instances = [loaded_models[model_key]['model'] for model_key in model_keys]
+
+        for model_instance, model_key in zip(loaded_models_instances, model_keys):
+            model_instance.conf = confs[model_key]
 
         detection_results = await asyncio.gather(
-            *[asyncio.to_thread(model['model'].predict, images, stream=True) for model in loaded_models_instances]
+            *[asyncio.to_thread(model.predict, images, stream=True) for model in loaded_models_instances]
         )
 
     combined_results = {}
-    for model, results in zip(loaded_models_instances, detection_results):
+    for model_key, results in zip(model_keys, detection_results):
+        model_description = loaded_models[model_key]['description']
         model_results = {}
         for image, result in zip(images, results):
             if hasattr(result, 'boxes') and isinstance(result.boxes, (list, tuple)):
                 max_conf = max((box.conf for box in result.boxes), default=0.0)
-                detected = any(len(result.boxes) > 0)
+                detected = len(result.boxes) > 0
             else:
                 max_conf = 0.0
                 detected = False
@@ -53,18 +57,15 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
                 "detected": detected,
                 "max_conf": max_conf
             }
-        combined_results[model['description']] = model_results
+        combined_results[model_description] = model_results
 
     gc.collect()
 
     return combined_results
 
-
-
-
-async def process_images(images: List[str], modelos: List[str], photo_ids: List[int]) -> List[Resultado]:
+async def process_images(images: List[str], modelos: List[str], photo_ids: List[int], confs: Dict[str, float]) -> List[Resultado]:
     start_time = time.time()
-    detection_results = await process_batch_images(images, modelos)
+    detection_results = await process_batch_images(images, modelos, confs)
     end_time = time.time()
     logging.info(f"Processed batch of {len(images)} images in {end_time - start_time} seconds")
 
@@ -81,9 +82,7 @@ async def process_images(images: List[str], modelos: List[str], photo_ids: List[
 
     return resultados
 
-
-
-async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_id: int):
+async def detect_objects(request: PolesRequest, modelos: List[str], confs: Dict[str, float], solicitacao_id: int):
     response = {solicitacao_id: []}
     batch_size = 5 
     for pole in request.Poles:
@@ -92,7 +91,7 @@ async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_
         for i in range(0, len(images), batch_size):
             batch_images = images[i:i+batch_size]
             batch_photo_ids = photo_ids[i:i+batch_size]
-            results = await process_images(batch_images, modelos, batch_photo_ids)
+            results = await process_images(batch_images, modelos, batch_photo_ids, confs)
             pole_results = {"PoleId": pole.PoleId, "Photos": [result.model_dump() for result in results]}
             response[solicitacao_id].append(pole_results)
 
@@ -106,8 +105,6 @@ async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_
             await client.post(str(request.webhook_url), json=response)
 
     return response
-
-
 
 @router.get("/obter_solicitacao/{solicitacao_id}", response_model=List[SolicitacaoCreate])
 async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
@@ -127,7 +124,6 @@ async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_
 
         return [solicitacao]
 
-
 async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
@@ -138,18 +134,20 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             await session.commit()
             await session.refresh(solicitacao)
 
-
 async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
     async with db as session:
         try:
-            modelos = list(loaded_models.keys())
-            detection_results = await detect_objects(request=poles_request, modelos=modelos, solicitacao_id=solicitacao_id)
+            modelos = ["IP", "Lampada_Acesa"]
+            confs = {
+                "model_ip_v1.3.pt": 0.4,
+                "model_la_v1.2.pt": 0.58
+            }
+            detection_results = await detect_objects(request=poles_request, modelos=modelos, confs=confs, solicitacao_id=solicitacao_id)
             await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
             return detection_results
         except Exception as e:
             await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
             raise e
-
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
