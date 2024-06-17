@@ -5,7 +5,6 @@ from ultralytics import YOLO
 
 loaded_models = {}
 
-
 models_to_download = {
     "model_ip_v1.3.pt": {
         "url": "https://drive.google.com/uc?id=1HhZTpDf_3XH_DBNnew6_kTmV7YDnQJkB",
@@ -45,7 +44,10 @@ async def load_models():
         model_ia.conf = model_config["conf"]
         loaded_models[model_file] = {
             "model": model_ia,
-            "description": model_config["description"]
+            "description": model_config["description"],
+            "conf": model_config["conf"]
         }
-    print("Modelos carregados:", loaded_models)
+    
+    loaded_models_info = {key: {"description": value["description"], "conf": value["conf"]} for key, value in loaded_models.items()}
+    print("Modelos carregados:", loaded_models_info)
     return loaded_models
