@@ -5,10 +5,10 @@ from ultralytics import YOLO
 
 loaded_models = {}
 
-# Links para download dos modelos no Google Drive
+# Links para download dos modelos no Google Drive com atributo nome
 models_to_download = {
-    "model_ip_v1.3.pt": "https://drive.google.com/uc?id=1HhZTpDf_3XH_DBNnew6_kTmV7YDnQJkB",
-    "model_la_v1.2.pt": "https://drive.google.com/uc?id=1FcjDeAnIju0d0tEb_ADIbmEAknQxMIJB",
+    "model_ip_v1.3.pt": {"url": "https://drive.google.com/uc?id=1HhZTpDf_3XH_DBNnew6_kTmV7YDnQJkB", "nome": "IP"},
+    "model_la_v1.2.pt": {"url": "https://drive.google.com/uc?id=1FcjDeAnIju0d0tEb_ADIbmEAknQxMIJB", "nome": "Lâmpada_Acesa"},
 }
 
 async def download_model(file_name, url):
@@ -17,7 +17,7 @@ async def download_model(file_name, url):
         gdown.download(url, output, quiet=False)
 
 async def download_all_models():
-    tasks = [download_model(file_name, url) for file_name, url in models_to_download.items()]
+    tasks = [download_model(file_name, details["url"]) for file_name, details in models_to_download.items()]
     await asyncio.gather(*tasks)
 
 async def load_models():
@@ -33,6 +33,6 @@ async def load_models():
     for model_file in model_files:
         model_path = os.path.join(model_directory, model_file)
         model_ia = await asyncio.to_thread(YOLO, model_path)
-        loaded_models[model_file] = model_ia
+        loaded_models[model_file] = {"model": model_ia, "nome": models_to_download[model_file]["nome"]}
     print("Modelos carregados:", loaded_models)
     return loaded_models

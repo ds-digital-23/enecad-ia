@@ -17,13 +17,13 @@ from models.modelo_model import ModeloModel
 from schemas.modelo_schema import ModeloResponse
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
 from core.deps import get_session, get_current_user
-from models_loader import loaded_models
+from models_loader import loaded_models  # Importando os modelos carregados
 
 router = APIRouter()
 semaphore = asyncio.Semaphore(5)
 
 async def get_model(model_name: str):
-    return loaded_models.get(model_name)
+    return loaded_models.get(model_name)["model"]
 
 async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, bool]]:
     async with semaphore:
@@ -40,10 +40,11 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
 
     combined_results = {}
     for model, results in zip(modelos, detection_results):
+        model_name = loaded_models[model]["nome"]
         model_results = {}
         for image, result in zip(images, results):
             model_results[image] = any(len(res.boxes) > 0 for res in result)
-        combined_results[model] = model_results
+        combined_results[model_name] = model_results
 
     # Força a coleta de lixo para liberar memória
     gc.collect()
@@ -137,6 +138,7 @@ async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSessio
         except Exception as e:
             await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
             raise e
+
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
