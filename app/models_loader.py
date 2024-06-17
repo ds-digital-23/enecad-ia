@@ -9,12 +9,12 @@ loaded_models = {}
 models_to_download = {
     "model_ip_v1.3.pt": {
         "url": "https://drive.google.com/uc?id=1HhZTpDf_3XH_DBNnew6_kTmV7YDnQJkB",
-        "conf": 0.4,
+        "conf": 0.0,
         "description": "IP"
     },
     "model_la_v1.2.pt": {
         "url": "https://drive.google.com/uc?id=1FcjDeAnIju0d0tEb_ADIbmEAknQxMIJB",
-        "conf": 0.58,
+        "conf": 0.0,
         "description": "Lampada_Acesa"
     }
 }
