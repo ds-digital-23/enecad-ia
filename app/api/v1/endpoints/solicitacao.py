@@ -43,10 +43,10 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
         model_name = loaded_models[model]["nome"]
         model_results = {}
         for image, result in zip(images, results):
-            max_conf = max((res.conf for res in result.boxes), default=0)
+            max_conf = round(max((res.conf.item() for res in result.boxes), default=0), 3)
             model_results[image] = {
                 "detected": any(len(res.boxes) > 0 for res in result),
-                "max_confidence": round(max_conf, 3)
+                "max_confidence": max_conf
             }
         combined_results[model_name] = model_results
 
