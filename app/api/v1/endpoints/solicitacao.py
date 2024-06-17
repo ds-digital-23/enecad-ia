@@ -42,9 +42,15 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
     for model, results in zip(loaded_models_instances, detection_results):
         model_results = {}
         for image, result in zip(images, results):
-            max_conf = max((box.conf for box in result.boxes), default=0.0)
+            if hasattr(result, 'boxes') and result.boxes is not None:
+                max_conf = max((box.conf for box in result.boxes), default=0.0)
+                detected = any(len(result.boxes) > 0)
+            else:
+                max_conf = 0.0
+                detected = False
+
             model_results[image] = {
-                "detected": any(len(result.boxes) > 0),
+                "detected": detected,
                 "max_conf": max_conf
             }
         combined_results[model['description']] = model_results
