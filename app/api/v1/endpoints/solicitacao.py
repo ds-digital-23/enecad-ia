@@ -15,7 +15,7 @@ from models.solicitacao_model import SolicitacaoModel
 from models.usuario_model import UsuarioModel
 from models.modelo_model import ModeloModel
 from schemas.modelo_schema import ModeloResponse
-from app.schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
+from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
 from core.deps import get_session, get_current_user
 from models_loader import loaded_models
 
