@@ -26,7 +26,7 @@ class PolesRequest(BaseModel):
 class Resultado(BaseModel):
     PhotoId: int
     URL: str
-    Resultado: Dict[str, Dict[str, float]]
+    Resultado: Dict[str, bool]
 
 
 class SolicitacaoSchema(BaseModel):
