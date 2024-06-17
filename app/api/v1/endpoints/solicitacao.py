@@ -25,7 +25,7 @@ semaphore = asyncio.Semaphore(5)
 async def get_model(model_name: str):
     return loaded_models.get(model_name)["model"]
 
-async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, bool]]:
+async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
     async with semaphore:
         start_time = time.time()
         detection_tasks = [get_model(modelo) for modelo in modelos]
@@ -43,7 +43,11 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
         model_name = loaded_models[model]["nome"]
         model_results = {}
         for image, result in zip(images, results):
-            model_results[image] = any(len(res.boxes) > 0 for res in result)
+            max_conf = max((res.conf for res in result.boxes), default=0)
+            model_results[image] = {
+                "detected": any(len(res.boxes) > 0 for res in result),
+                "max_confidence": max_conf
+            }
         combined_results[model_name] = model_results
 
     # Força a coleta de lixo para liberar memória
@@ -59,7 +63,7 @@ async def process_images(images: List[str], modelos: List[str], photo_ids: List[
 
     resultados = []
     for photo_id, image in zip(photo_ids, images):
-        detection_result = {model: detection_results[model][image] for model in detection_results}
+        detection_result = {model: {"detected": detection_results[model][image]["detected"], "max_confidence": detection_results[model][image]["max_confidence"]} for model in detection_results}
         resultados.append(Resultado(PhotoId=photo_id, URL=image, Resultado=detection_result))
 
     return resultados
@@ -138,7 +142,6 @@ async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSessio
         except Exception as e:
             await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
             raise e
-
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):

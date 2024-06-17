@@ -1,11 +1,9 @@
 from typing import List, Dict, Optional
 from pydantic import BaseModel, HttpUrl
 
-
 class PhotoSchema(BaseModel):
     PhotoId: int
     URL: str
-
 
 class PoleSchema(BaseModel):
     PoleId: int
@@ -14,7 +12,6 @@ class PoleSchema(BaseModel):
     class Config:
         from_attributes = True
 
-
 class PolesRequest(BaseModel):
     Poles: List[PoleSchema]
     webhook_url: Optional[HttpUrl] = None
@@ -22,12 +19,14 @@ class PolesRequest(BaseModel):
     class Config:
         from_attributes = True
 
+class DetectionResult(BaseModel):
+    detected: bool
+    max_confidence: float
 
 class Resultado(BaseModel):
     PhotoId: int
     URL: str
-    Resultado: Dict[str, bool]
-
+    Resultado: Dict[str, DetectionResult]
 
 class SolicitacaoSchema(BaseModel):
     id: int
@@ -36,7 +35,6 @@ class SolicitacaoSchema(BaseModel):
 
     class Config:
         from_attributes = True
-
 
 class SolicitacaoCreate(BaseModel):
     id: int
