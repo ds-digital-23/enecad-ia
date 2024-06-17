@@ -1,6 +1,6 @@
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr
-from schemas.solicitacao_schema import SolicitacaoSchema
+from app.schemas.solicitacao_schema import SolicitacaoSchema
 from schemas.modelo_schema import ModeloSchema
 
 

@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional
 from pydantic import BaseModel, HttpUrl
 
 
@@ -26,7 +26,7 @@ class PolesRequest(BaseModel):
 class Resultado(BaseModel):
     PhotoId: int
     URL: str
-    Resultado: Dict[str, Dict[str, Union[float, bool]]]
+    Resultado: Dict[str, bool]
 
 
 class SolicitacaoSchema(BaseModel):
