@@ -22,7 +22,6 @@ from models_loader import loaded_models
 router = APIRouter()
 semaphore = asyncio.Semaphore(20)
 
-
 async def get_model(model_name: str):
     return loaded_models.get(model_name)["model"]
 
