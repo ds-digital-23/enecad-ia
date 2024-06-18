@@ -12,6 +12,5 @@ class UsuarioModel(settings.DBBaseModel):
     senha: str = Column(String(256), nullable=False)
     admin: bool = Column(Boolean, default=False)
     
-    modelos = relationship('ModeloModel', cascade='all, delete-orphan', back_populates='criador', uselist=True, lazy='joined')
     solicitacoes = relationship('SolicitacaoModel', cascade='all, delete-orphan', back_populates='criador', uselist=True, lazy='joined')
     

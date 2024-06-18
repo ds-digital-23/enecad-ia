@@ -10,6 +10,7 @@ RUN apt-get update -y && apt-get install -y \
     && apt-get clean
 
 RUN python -m venv /opt/venv
+
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip install --upgrade pip --default-timeout=6000
