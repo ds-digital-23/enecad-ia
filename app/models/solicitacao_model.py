@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import List
 
 
+
 class SolicitacaoModel(settings.DBBaseModel):
     __tablename__ = 'solicitacoes'
 

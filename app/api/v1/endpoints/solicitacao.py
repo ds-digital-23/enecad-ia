@@ -13,17 +13,19 @@ from sqlalchemy.future import select
 from ultralytics import YOLO
 from models.solicitacao_model import SolicitacaoModel
 from models.usuario_model import UsuarioModel
-from models.modelo_model import ModeloModel
-from schemas.modelo_schema import ModeloResponse
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
 from core.deps import get_session, get_current_user
-from models_loader import loaded_models  # Importando os modelos carregados
+from models_loader import loaded_models 
+
+
 
 router = APIRouter()
-semaphore = asyncio.Semaphore(5)
+semaphore = asyncio.Semaphore(20)
+
 
 async def get_model(model_name: str):
     return loaded_models.get(model_name)["model"]
+
 
 async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
     async with semaphore:
@@ -50,10 +52,10 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
             }
         combined_results[model_name] = model_results
 
-    # Força a coleta de lixo para liberar memória
     gc.collect()
 
     return combined_results
+
 
 async def process_images(images: List[str], modelos: List[str], photo_ids: List[int]) -> List[Resultado]:
     start_time = time.time()
@@ -68,9 +70,10 @@ async def process_images(images: List[str], modelos: List[str], photo_ids: List[
 
     return resultados
 
+
 async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_id: int):
     response = {solicitacao_id: []}
-    batch_size = 5  # Reduz o tamanho do lote para diminuir o uso de memória
+    batch_size = 20
     for pole in request.Poles:
         images = [photo.URL for photo in pole.Photos]
         photo_ids = [photo.PhotoId for photo in pole.Photos]
@@ -92,17 +95,6 @@ async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_
 
     return response
 
-@router.get("/obter_modelo/{modelo_id}", response_model=List[ModeloResponse])
-async def obter_modelo(modelo_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
-    async with db as session:
-        query = select(ModeloModel).filter(ModeloModel.modelo_id == modelo_id, ModeloModel.status == 1)
-        result = await session.execute(query)
-        modelos = result.scalars().unique().all()
-
-        if not modelos:
-            raise HTTPException(status_code=404, detail="Nenhum modelo ativo encontrado")
-
-        return modelos
 
 @router.get("/obter_solicitacao/{solicitacao_id}", response_model=List[SolicitacaoCreate])
 async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
@@ -122,6 +114,7 @@ async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_
 
         return [solicitacao]
 
+
 async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
@@ -131,6 +124,7 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             solicitacao.status = status
             await session.commit()
             await session.refresh(solicitacao)
+
 
 async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
     async with db as session:
@@ -142,6 +136,7 @@ async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSessio
         except Exception as e:
             await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
             raise e
+
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):

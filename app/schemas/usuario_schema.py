@@ -1,7 +1,7 @@
 from typing import Optional, List
 from pydantic import BaseModel, EmailStr
 from schemas.solicitacao_schema import SolicitacaoSchema
-from schemas.modelo_schema import ModeloSchema
+
 
 
 class UsuarioSchemaBase(BaseModel):
@@ -19,10 +19,6 @@ class UsuarioSchemaCreate(UsuarioSchemaBase):
 
 class UsuarioSchemaSolicitacoes(UsuarioSchemaBase):
     solicitacoes: Optional[List[SolicitacaoSchema]]
-
-
-class UsuarioSchemaModelos(UsuarioSchemaBase):
-    modelos: Optional[List[ModeloSchema]]
 
 
 class UsuarioSchemaUp(UsuarioSchemaBase):

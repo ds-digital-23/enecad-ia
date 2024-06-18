@@ -3,6 +3,7 @@ from sqlalchemy import Column, Integer, String, Boolean
 from sqlalchemy.orm import relationship
 
 
+
 class UsuarioModel(settings.DBBaseModel):
     __tablename__ = 'usuarios'
 

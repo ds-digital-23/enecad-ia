@@ -10,13 +10,13 @@ from core.configs import settings
 from models.usuario_model import UsuarioModel
 
 
+
 class TokenData(BaseModel):
     username: Optional[str] = None
 
 
 async def get_session() -> AsyncGenerator:
     session: AsyncSession = Session()
-    
     try:
         yield session
     finally:
@@ -42,7 +42,3 @@ async def get_current_user(db: AsyncSession = Depends(get_session), token: str =
         if usuario is None:
             raise credential_exception
         return usuario
-
-        
-
-        

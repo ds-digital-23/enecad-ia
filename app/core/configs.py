@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from decouple import config
 
 
+
 class Settings(BaseSettings):
     API_VERSION: str = config('API_VERSION')
     TEST_MODE: bool = config('TEST_MODE', default=False, cast=bool)
