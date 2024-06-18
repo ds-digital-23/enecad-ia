@@ -3,7 +3,7 @@ import os
 import asyncio
 import time
 import json
-import httpx
+import aiohttp
 import gc
 from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
@@ -21,6 +21,7 @@ from models_loader import loaded_models
 
 router = APIRouter()
 semaphore = asyncio.Semaphore(20)
+
 
 async def get_model(model_name: str):
     return loaded_models.get(model_name)["model"]
@@ -52,7 +53,6 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
         combined_results[model_name] = model_results
 
     gc.collect()
-
     return combined_results
 
 
@@ -89,8 +89,10 @@ async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_
         json.dump(response, response_file, indent=4)
 
     if request.webhook_url:
-        async with httpx.AsyncClient() as client:
-            await client.post(str(request.webhook_url), json=response)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(request.webhook_url, json=response) as resp:
+                if resp.status != 200:
+                    logging.error(f"Failed to post results to webhook: {resp.status}")
 
     return response
 
