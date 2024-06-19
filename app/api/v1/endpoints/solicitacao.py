@@ -15,42 +15,32 @@ from models.solicitacao_model import SolicitacaoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
 from core.deps import get_session, get_current_user
-from models_loader import loaded_models 
+from models_loader import loaded_models
 
 
 router = APIRouter()
 semaphore = asyncio.Semaphore(20)
 
 
-async def get_model(model_name: str):
-    start_time = time.time()
-    model = loaded_models.get(model_name)["model"]
-    end_time = time.time()
-    print(f"get_model function took {end_time - start_time:.2f} seconds")
-    return model
-
-
 async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
     async with semaphore:
         start_time = time.time()
-        detection_tasks = [get_model(modelo) for modelo in modelos]
-        loaded_models_instances = await asyncio.gather(*detection_tasks)
 
         detection_results = []
-        for model in loaded_models_instances:
+        for model_name in modelos:
+            model = loaded_models[model_name]["model"]
             model_start_time = time.time()
             results = await asyncio.to_thread(model.predict, images, stream=True)
             model_end_time = time.time()
             print(f"Model {model} processed images in {model_end_time - model_start_time:.2f} seconds")
-            detection_results.append(results)
+            detection_results.append((model_name, results))
 
         end_time = time.time()
         print(f"process_batch_images function took {end_time - start_time:.2f} seconds")
         logging.info(f"Processed {len(images)} images with {len(modelos)} models in {end_time - start_time} seconds")
 
     combined_results = {}
-    for model, results in zip(modelos, detection_results):
-        model_name = loaded_models[model]["nome"]
+    for model_name, results in detection_results:
         model_results = {}
         for image, result in zip(images, results):
             image_start_time = time.time()
@@ -61,7 +51,7 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
                 "detected": any(len(res.boxes) > 0 for res in result),
                 "max_confidence": max_conf
             }
-        combined_results[model_name] = model_results
+        combined_results[loaded_models[model_name]["nome"]] = model_results
 
     gc.collect()
     return combined_results
