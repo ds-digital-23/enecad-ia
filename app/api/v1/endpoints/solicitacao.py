@@ -18,13 +18,16 @@ from core.deps import get_session, get_current_user
 from models_loader import loaded_models 
 
 
-
 router = APIRouter()
 semaphore = asyncio.Semaphore(20)
 
 
 async def get_model(model_name: str):
-    return loaded_models.get(model_name)["model"]
+    start_time = time.time()
+    model = loaded_models.get(model_name)["model"]
+    end_time = time.time()
+    print(f"get_model function took {end_time - start_time:.2f} seconds")
+    return model
 
 
 async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
@@ -33,11 +36,16 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
         detection_tasks = [get_model(modelo) for modelo in modelos]
         loaded_models_instances = await asyncio.gather(*detection_tasks)
 
-        detection_results = await asyncio.gather(
-            *[asyncio.to_thread(model.predict, images, stream=True) for model in loaded_models_instances]
-        )
+        detection_results = []
+        for model in loaded_models_instances:
+            model_start_time = time.time()
+            results = await asyncio.to_thread(model.predict, images, stream=True)
+            model_end_time = time.time()
+            print(f"Model {model} processed images in {model_end_time - model_start_time:.2f} seconds")
+            detection_results.append(results)
 
         end_time = time.time()
+        print(f"process_batch_images function took {end_time - start_time:.2f} seconds")
         logging.info(f"Processed {len(images)} images with {len(modelos)} models in {end_time - start_time} seconds")
 
     combined_results = {}
@@ -45,7 +53,10 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
         model_name = loaded_models[model]["nome"]
         model_results = {}
         for image, result in zip(images, results):
+            image_start_time = time.time()
             max_conf = round(max((res.conf.item() for res in result.boxes), default=0), 3)
+            image_end_time = time.time()
+            print(f"Image {image} processed in {image_end_time - image_start_time:.2f} seconds")
             model_results[image] = {
                 "detected": any(len(res.boxes) > 0 for res in result),
                 "max_confidence": max_conf
@@ -60,6 +71,7 @@ async def process_images(images: List[str], modelos: List[str], photo_ids: List[
     start_time = time.time()
     detection_results = await process_batch_images(images, modelos)
     end_time = time.time()
+    print(f"process_images function took {end_time - start_time:.2f} seconds")
     logging.info(f"Processed batch of {len(images)} images in {end_time - start_time} seconds")
 
     resultados = []
@@ -71,6 +83,7 @@ async def process_images(images: List[str], modelos: List[str], photo_ids: List[
 
 
 async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_id: int):
+    start_time = time.time()
     response = {solicitacao_id: []}
     batch_size = 20
     for pole in request.Poles:
@@ -94,11 +107,14 @@ async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_
                 if resp.status != 200:
                     logging.error(f"Failed to post results to webhook: {resp.status}")
 
+    end_time = time.time()
+    print(f"detect_objects function took {end_time - start_time:.2f} seconds")
     return response
 
 
 @router.get("/obter_solicitacao/{solicitacao_id}", response_model=List[SolicitacaoCreate])
 async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+    start_time = time.time()
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
         result = await session.execute(query)
@@ -111,12 +127,17 @@ async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_
             response_file_path = os.path.join('results', f"solicitacao_{solicitacao_id}.json")
             if not os.path.exists(response_file_path):
                 raise HTTPException(status_code=404, detail="Arquivo de resultado não encontrado")
+            end_time = time.time()
+            print(f"obter_solicitacao function took {end_time - start_time:.2f} seconds")
             return FileResponse(path=response_file_path, filename=f"solicitacao_{solicitacao_id}.json", media_type='application/json')
 
+        end_time = time.time()
+        print(f"obter_solicitacao function took {end_time - start_time:.2f} seconds")
         return [solicitacao]
 
 
 async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
+    start_time = time.time()
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
         result = await session.execute(query)
@@ -125,22 +146,30 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             solicitacao.status = status
             await session.commit()
             await session.refresh(solicitacao)
+    end_time = time.time()
+    print(f"update_status function took {end_time - start_time:.2f} seconds")
 
 
 async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
+    start_time = time.time()
     async with db as session:
         try:
             modelos = list(loaded_models.keys())
             detection_results = await detect_objects(request=poles_request, modelos=modelos, solicitacao_id=solicitacao_id)
             await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
+            end_time = time.time()
+            print(f"trigger_model_and_detection_tasks function took {end_time - start_time:.2f} seconds")
             return detection_results
         except Exception as e:
             await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
+            end_time = time.time()
+            print(f"trigger_model_and_detection_tasks function took {end_time - start_time:.2f} seconds")
             raise e
 
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+    start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
 
@@ -156,4 +185,6 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
 
         background_tasks.add_task(trigger_model_and_detection_tasks, nova_solicitacao.id, session, poles_request)
 
+        end_time = time.time()
+        print(f"criar_solicitacao function took {end_time - start_time:.2f} seconds")
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
