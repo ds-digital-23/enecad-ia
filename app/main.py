@@ -9,9 +9,10 @@ from api.v1.api import api_router
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    await load_models()
+    global model
+    model = await load_models()
     yield
-
+   
 
 app = FastAPI(
     title='Enecad - API',
