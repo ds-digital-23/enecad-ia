@@ -21,6 +21,7 @@ from models_loader import loaded_models
 router = APIRouter()
 semaphore = asyncio.Semaphore(20)
 model = None  # Variável global para armazenar o primeiro modelo
+model_name = None  # Variável global para armazenar o nome do primeiro modelo
 
 
 async def process_batch_images(images: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
@@ -31,8 +32,8 @@ async def process_batch_images(images: List[str]) -> Dict[str, Dict[str, Dict[st
         model_start_time = time.time()
         results = await asyncio.to_thread(model.predict, images, stream=True)
         model_end_time = time.time()
-        print(f"Model {model} processed images in {model_end_time - model_start_time:.2f} seconds")
-        detection_results.append(("default_model", results))
+        print(f"Model {model_name} processed images in {model_end_time - model_start_time:.2f} seconds")
+        detection_results.append((model_name, results))
 
         end_time = time.time()
         print(f"process_batch_images function took {end_time - start_time:.2f} seconds")
@@ -140,12 +141,13 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
 
 
 async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
-    global model  # Declare as global to modify the global variable
+    global model, model_name  # Declare as global to modify the global variable
     start_time = time.time()
     async with db as session:
         try:
             modelos = list(loaded_models.keys())
-            model = loaded_models[modelos[0]]["model"]  # Assign the first model to the global variable
+            model_name = modelos[0]
+            model = loaded_models[model_name]["model"]  # Assign the first model to the global variable
             detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id)
             await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
             end_time = time.time()
