@@ -7,7 +7,6 @@ from core.configs import settings
 from api.v1.api import api_router
 
 
-
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     await load_models()

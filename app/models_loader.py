@@ -25,3 +25,5 @@ async def load_model():
         os.makedirs(model_directory)
 
     await download_all_models()
+
+    return "Modelos foram baixados e estão na pasta 'ia'."
