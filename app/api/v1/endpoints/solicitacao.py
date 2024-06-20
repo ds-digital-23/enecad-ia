@@ -19,10 +19,12 @@ router = APIRouter()
 
 
 # Carregar o modelo YOLO no início
-#MODEL_PATH = 'app/ia/model_ip_v1.3.pt'
-#model = YOLO(MODEL_PATH)
+MODEL_PATH = os.path.join(os.path.dirname(__file__), '../../ia/model_ip_v1.3.pt')
+if not os.path.exists(MODEL_PATH):
+    raise FileNotFoundError(f"Modelo não encontrado no caminho: {MODEL_PATH}")
 
-from main import model
+model = YOLO(MODEL_PATH)
+
 
 async def predict_image(image_url: str) -> Dict[str, float]:
     result = await asyncio.to_thread(model.predict, image_url, stream=True)

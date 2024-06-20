@@ -27,6 +27,6 @@ async def load_models():
     model_path = os.path.join(model_directory, "model_ip_v1.3.pt")
     model_ia = await asyncio.to_thread(YOLO, model_path)
     loaded_models["model_ip_v1.3.pt"] = {"model": model_ia, "nome": models_to_download["model_ip_v1.3.pt"]["nome"]}
-    
+    print(os.listdir('ia'))
     print("Modelos carregados:", loaded_models)
     return loaded_models
