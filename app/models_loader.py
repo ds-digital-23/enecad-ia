@@ -18,7 +18,7 @@ async def download_all_models():
     tasks = [download_model(file_name, details["url"]) for file_name, details in models_to_download.items()]
     await asyncio.gather(*tasks)
 
-async def load_model():
+async def load_models():
     model_directory = 'ia' 
 
     if not os.path.exists(model_directory):
@@ -26,13 +26,4 @@ async def load_model():
 
     await download_all_models()
 
-    loaded_models = {}
-    model_files = [f for f in os.listdir(model_directory) if f.endswith('.pt') and os.path.isfile(os.path.join(model_directory, f))]
-    for model_file in model_files:
-        model_path = os.path.join(model_directory, model_file)
-        model_ia = await asyncio.to_thread(YOLO, model_path)
-        loaded_models[model_file] = {"model": model_ia, "nome": models_to_download[model_file]["nome"]}
-    
-    print("Modelos carregados:", loaded_models)
-
-    return loaded_models
+    return "Modelos foram baixados e estão na pasta 'ia'."
