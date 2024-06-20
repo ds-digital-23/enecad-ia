@@ -14,11 +14,9 @@ from models.solicitacao_model import SolicitacaoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
 from core.deps import get_session, get_current_user
-#from models_loader import loaded_models
 
 router = APIRouter()
 
-#loaded_models()
 
 # Carregar o modelo YOLO no início
 MODEL_PATH = 'ia/model_ip_v1.3.pt'
