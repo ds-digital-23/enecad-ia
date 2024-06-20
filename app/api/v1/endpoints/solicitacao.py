@@ -1,9 +1,10 @@
 import logging
+import os
 import asyncio
 import time
-import os
 import json
-import gdown
+import aiohttp
+import gc
 from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
@@ -14,84 +15,86 @@ from models.solicitacao_model import SolicitacaoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest, Resultado
 from core.deps import get_session, get_current_user
+from models_loader import loaded_models
 
 router = APIRouter()
+semaphore = asyncio.Semaphore(20)
 
+# Pegando apenas o primeiro modelo
+model = next(iter(loaded_models.values()))["model"]
 
-# Carregar o modelo YOLO no início
-MODEL_PATH = os.path.join(os.path.dirname(__file__), '../../ia/model_ip_v1.3.pt')
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Modelo não encontrado no caminho: {MODEL_PATH}")
+async def process_batch_images(images: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
+    async with semaphore:
+        start_time = time.time()
 
-model = YOLO(MODEL_PATH)
+        results = await asyncio.to_thread(model.predict, images, stream=True)
+        model_end_time = time.time()
+        print(f"Model {model} processed images in {model_end_time - start_time:.2f} seconds")
 
+        detection_results = results
 
-async def predict_image(image_url: str) -> Dict[str, float]:
-    result = await asyncio.to_thread(model.predict, image_url, stream=True)
-    max_conf = round(max((res.conf.item() for res in result.boxes), default=0), 3)
-    return {"url": image_url, "max_conf": max_conf}
+        end_time = time.time()
+        print(f"process_batch_images function took {end_time - start_time:.2f} seconds")
+        logging.info(f"Processed {len(images)} images in {end_time - start_time} seconds")
 
-async def detect_images(solicitacao_id: int, session: AsyncSession, poles_request: PolesRequest):
-    async with session:
-        
-        # Coletar todas as URLs de imagens
-        image_urls = []
-        for pole in poles_request.Poles:
-            for photo in pole.Photos:
-                image_urls.append(photo.URL)
+    combined_results = {}
+    model_results = {}
+    for image, result in zip(images, detection_results):
+        image_start_time = time.time()
+        max_conf = round(max((res.conf.item() for res in result.boxes), default=0), 3)
+        image_end_time = time.time()
+        print(f"Image {image} processed in {image_end_time - image_start_time:.2f} seconds")
+        model_results[image] = {
+            "detected": any(len(res.boxes) > 0 for res in result),
+            "max_confidence": max_conf
+        }
+    combined_results[loaded_models[model]["nome"]] = model_results
 
-        # Predizer para todas as imagens
-        predictions = await asyncio.gather(*(predict_image(url) for url in image_urls))
+    gc.collect()
+    return combined_results
 
-        # Agrupar resultados por poste
-        resultado = {"Poles": []}
-        for pole in poles_request.Poles:
-            pole_result = {"PoleId": pole.PoleId, "Photos": []}
-            for photo in pole.Photos:
-                for prediction in predictions:
-                    if prediction["url"] == photo.URL:
-                        pole_result["Photos"].append({
-                            "PhotoId": photo.PhotoId,
-                            "URL": photo.URL,
-                            "max_conf": prediction["max_conf"]
-                        })
-            resultado["Poles"].append(pole_result)
-
-        response_file_path = os.path.join('results', f"solicitacao_{solicitacao_id}.json")
-        with open(response_file_path, 'w') as file:
-            json.dump(resultado, file)
-
-
-async def start_detection(solicitacao_id: int, session: AsyncSession, poles_request: PolesRequest):
-    try:
-        detection_results = await detect_images(solicitacao_id, session, poles_request)
-        await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
-        return detection_results
-    except Exception as e:
-        logging.error(f"Detection task failed: {e}")
-        await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
-
-@router.post("/", response_model=SolicitacaoCreate)
-async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+async def process_images(images: List[str], photo_ids: List[int]) -> List[Resultado]:
     start_time = time.time()
-    total_poles = len(poles_request.Poles)
-    total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
+    detection_results = await process_batch_images(images)
+    end_time = time.time()
+    print(f"process_images function took {end_time - start_time:.2f} seconds")
+    logging.info(f"Processed batch of {len(images)} images in {end_time - start_time} seconds")
 
-    if total_poles > 1000:
-        raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 1000.")
+    resultados = []
+    for photo_id, image in zip(photo_ids, images):
+        detection_result = {model: {"detected": detection_results[model][image]["detected"], "max_confidence": detection_results[model][image]["max_confidence"]} for model in detection_results}
+        resultados.append(Resultado(PhotoId=photo_id, URL=image, Resultado=detection_result))
 
-    nova_solicitacao = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
+    return resultados
 
-    async with db as session:
-        session.add(nova_solicitacao)
-        await session.commit()
-        await session.refresh(nova_solicitacao)
+async def detect_objects(request: PolesRequest, solicitacao_id: int):
+    start_time = time.time()
+    response = {solicitacao_id: []}
+    batch_size = 20
+    for pole in request.Poles:
+        images = [photo.URL for photo in pole.Photos]
+        photo_ids = [photo.PhotoId for photo in pole.Photos]
+        for i in range(0, len(images), batch_size):
+            batch_images = images[i:i+batch_size]
+            batch_photo_ids = photo_ids[i:i+batch_size]
+            results = await process_images(batch_images, batch_photo_ids)
+            pole_results = {"PoleId": pole.PoleId, "Photos": [result.model_dump() for result in results]}
+            response[solicitacao_id].append(pole_results)
 
-        background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
+    os.makedirs('results', exist_ok=True)
+    response_file_path = os.path.join('results', f"solicitacao_{solicitacao_id}.json")
+    with open(response_file_path, 'w') as response_file:
+        json.dump(response, response_file, indent=4)
+
+    if request.webhook_url:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(request.webhook_url, json=response) as resp:
+                if resp.status != 200:
+                    logging.error(f"Failed to post results to webhook: {resp.status}")
 
     end_time = time.time()
-    logging.info(f"Processed request in {end_time - start_time:.2f} seconds")
-    return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
+    print(f"detect_objects function took {end_time - start_time:.2f} seconds")
+    return response
 
 @router.get("/obter_solicitacao/{solicitacao_id}", response_model=List[SolicitacaoCreate])
 async def obter_solicitacao(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
@@ -128,3 +131,40 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             await session.refresh(solicitacao)
     end_time = time.time()
     print(f"update_status function took {end_time - start_time:.2f} seconds")
+
+async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
+    start_time = time.time()
+    async with db as session:
+        try:
+            detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id)
+            await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
+            end_time = time.time()
+            print(f"trigger_model_and_detection_tasks function took {end_time - start_time:.2f} seconds")
+            return detection_results
+        except Exception as e:
+            await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
+            end_time = time.time()
+            print(f"trigger_model_and_detection_tasks function took {end_time - start_time:.2f} seconds")
+            raise e
+
+@router.post("/", response_model=SolicitacaoCreate)
+async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+    start_time = time.time()
+    total_poles = len(poles_request.Poles)
+    total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
+
+    if total_poles > 100:
+        raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 100.")
+
+    nova_solicitacao: SolicitacaoModel = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
+
+    async with db as session:
+        session.add(nova_solicitacao)
+        await session.commit()
+        await session.refresh(nova_solicitacao)
+
+        background_tasks.add_task(trigger_model_and_detection_tasks, nova_solicitacao.id, session, poles_request)
+
+        end_time = time.time()
+        print(f"criar_solicitacao function took {end_time - start_time:.2f} seconds")
+        return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
