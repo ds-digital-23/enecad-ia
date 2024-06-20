@@ -27,6 +27,7 @@ async def download_all_models():
 
 async def load_models():
     model_directory = 'ia' 
+    print('aquiiiii')
 
     if not os.path.exists(model_directory):
         os.makedirs(model_directory)

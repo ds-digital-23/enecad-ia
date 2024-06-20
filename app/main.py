@@ -9,6 +9,7 @@ from api.v1.api import api_router
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    print('hhehehehehe')
     await load_models()
     yield
 
