@@ -20,24 +20,23 @@ from models_loader import loaded_models
 
 router = APIRouter()
 semaphore = asyncio.Semaphore(20)
+model = None  # Variável global para armazenar o primeiro modelo
 
 
-async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
+async def process_batch_images(images: List[str]) -> Dict[str, Dict[str, Dict[str, float]]]:
     async with semaphore:
         start_time = time.time()
 
         detection_results = []
-        for model_name in modelos:
-            model = loaded_models[model_name]["model"]
-            model_start_time = time.time()
-            results = await asyncio.to_thread(model.predict, images, stream=True)
-            model_end_time = time.time()
-            print(f"Model {model} processed images in {model_end_time - model_start_time:.2f} seconds")
-            detection_results.append((model_name, results))
+        model_start_time = time.time()
+        results = await asyncio.to_thread(model.predict, images, stream=True)
+        model_end_time = time.time()
+        print(f"Model {model} processed images in {model_end_time - model_start_time:.2f} seconds")
+        detection_results.append(("default_model", results))
 
         end_time = time.time()
         print(f"process_batch_images function took {end_time - start_time:.2f} seconds")
-        logging.info(f"Processed {len(images)} images with {len(modelos)} models in {end_time - start_time} seconds")
+        logging.info(f"Processed {len(images)} images with 1 model in {end_time - start_time} seconds")
 
     combined_results = {}
     for model_name, results in detection_results:
@@ -57,9 +56,9 @@ async def process_batch_images(images: List[str], modelos: List[str]) -> Dict[st
     return combined_results
 
 
-async def process_images(images: List[str], modelos: List[str], photo_ids: List[int]) -> List[Resultado]:
+async def process_images(images: List[str], photo_ids: List[int]) -> List[Resultado]:
     start_time = time.time()
-    detection_results = await process_batch_images(images, modelos)
+    detection_results = await process_batch_images(images)
     end_time = time.time()
     print(f"process_images function took {end_time - start_time:.2f} seconds")
     logging.info(f"Processed batch of {len(images)} images in {end_time - start_time} seconds")
@@ -72,7 +71,7 @@ async def process_images(images: List[str], modelos: List[str], photo_ids: List[
     return resultados
 
 
-async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_id: int):
+async def detect_objects(request: PolesRequest, solicitacao_id: int):
     start_time = time.time()
     response = {solicitacao_id: []}
     batch_size = 20
@@ -82,7 +81,7 @@ async def detect_objects(request: PolesRequest, modelos: List[str], solicitacao_
         for i in range(0, len(images), batch_size):
             batch_images = images[i:i+batch_size]
             batch_photo_ids = photo_ids[i:i+batch_size]
-            results = await process_images(batch_images, modelos, batch_photo_ids)
+            results = await process_images(batch_images, batch_photo_ids)
             pole_results = {"PoleId": pole.PoleId, "Photos": [result.model_dump() for result in results]}
             response[solicitacao_id].append(pole_results)
 
@@ -141,11 +140,13 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
 
 
 async def trigger_model_and_detection_tasks(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
+    global model  # Declare as global to modify the global variable
     start_time = time.time()
     async with db as session:
         try:
             modelos = list(loaded_models.keys())
-            detection_results = await detect_objects(request=poles_request, modelos=modelos, solicitacao_id=solicitacao_id)
+            model = loaded_models[modelos[0]]["model"]  # Assign the first model to the global variable
+            detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id)
             await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
             end_time = time.time()
             print(f"trigger_model_and_detection_tasks function took {end_time - start_time:.2f} seconds")
