@@ -92,7 +92,7 @@ typer==0.12.3
 typing-extensions==4.12.1
 tzdata==2024.1
 ujson==5.10.0
-ultralytics-thop==0.2.8
+ultralytics-thop==2.0.0
 ultralytics==8.2.39
 urllib3==2.2.1
 uvicorn==0.30.1
