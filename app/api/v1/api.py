@@ -1,6 +1,5 @@
 from fastapi import APIRouter
-from api.v1.endpoints import usuario
-from api.v1.endpoints import solicitacao
+from api.v1.endpoints import usuario, solicitacao
 
 
 
