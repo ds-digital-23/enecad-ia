@@ -20,7 +20,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 
 router = APIRouter()
-semaphore = asyncio.Semaphore(100)
+semaphore = asyncio.Semaphore(20)
 
 modelos = [YOLO(os.path.join('ia', file)) for file in os.listdir('ia') if file.endswith('.pt')]
 modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.listdir('ia') if file.endswith('.pt')]
@@ -28,10 +28,11 @@ modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.lis
 
 
 async def predict_model(model, images):
-    try:
-        return await asyncio.to_thread(model.predict, images)
-    except:
-        return await asyncio.to_thread(model.predict, images)
+    async with semaphore:
+        try:
+            return await asyncio.to_thread(model.predict, images)
+        except:
+            return await asyncio.to_thread(model.predict, images)
 
 
 async def process_pole(pole) -> Dict:
@@ -68,9 +69,18 @@ async def process_pole(pole) -> Dict:
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    start_time = time.time()
-    pole_tasks = [process_pole(pole) for pole in request.Poles]
-    pole_results = await asyncio.gather(*pole_tasks)
+    #pole_tasks = [process_pole(pole) for pole in request.Poles]
+    #pole_results = await asyncio.gather(*pole_tasks)
+
+    batch_size = 10
+    pole_results = []
+
+    for i in range(0, len(request.Poles), batch_size):
+        batch = request.Poles[i:i + batch_size]
+        pole_tasks = [process_pole(pole) for pole in batch]
+        batch_results = await asyncio.gather(*pole_tasks)
+        pole_results.extend(batch_results)
+        gc.collect() 
 
     os.makedirs('results', exist_ok=True)
     response = {str(solicitacao_id): pole_results}
@@ -85,7 +95,6 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
                 if resp.status != 200:
                     logging.error(f"Falha ao enviar resultado para o webhook: {resp.status}")
 
-    end_time = time.time()
     gc.collect()
     return response
 
