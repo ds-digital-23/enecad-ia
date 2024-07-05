@@ -122,8 +122,8 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
     start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
-    if total_poles > 100:
-        raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 100.")
+    if total_poles > 500:
+        raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 500.")
 
     nova_solicitacao: SolicitacaoModel = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
     async with db as session:
