@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from core.configs import settings
 from api.v1.api import api_router
+from fastapi.middleware.cors import CORSMiddleware
 
 
 
@@ -13,6 +14,13 @@ app = FastAPI(
     license="Licença Comercial Enecad"
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Ajuste conforme necessário
+    allow_credentials=True,
+    allow_methods=["*"],  # Permite todos os métodos (POST, GET, etc.)
+    allow_headers=["*"],
+)
 
 @app.get("/")
 def health_check():
