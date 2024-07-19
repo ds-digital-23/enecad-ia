@@ -26,7 +26,6 @@ modelos = [YOLO(os.path.join('ia', file)) for file in os.listdir('ia') if file.e
 modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.listdir('ia') if file.endswith('.pt')]
 
 
-
 async def predict_model(model, images):
     async with semaphore:
         try:
@@ -39,7 +38,7 @@ async def process_pole(pole) -> Dict:
     images = [photo.URL for photo in pole.Photos]
     photo_ids = [photo.PhotoId for photo in pole.Photos]
     tasks = [predict_model(model, images) for model in modelos]
-    results = await asyncio.gather(*tasks)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
 
     pole_results = []
     for idx, (photo_id, image) in enumerate(zip(photo_ids, images)):
@@ -48,14 +47,15 @@ async def process_pole(pole) -> Dict:
         for i, modelo_nome in enumerate(modelos_nome):
             res = results[i][idx]
 
-            if len(res.names) == 1:
-                # Modelo que retorna uma única classe
-                max_conf = round(max((box.conf.item() for box in res.boxes), default=0), 3)
-                pole_result[modelo_nome] = (max_conf > 0, max_conf)
+            if isinstance(res, Exception):
+                pole_result[modelo_nome] = "Não foi possível abrir esta imagem"
             else:
-                # Modelo multiclasse
-                class_confidences = {res.names[int(box.cls)]: (round(box.conf.item(), 3) > 0, round(box.conf.item(), 3)) for box in res.boxes}
-                pole_result[modelo_nome] = class_confidences
+                if len(res.names) == 1:
+                    max_conf = round(max((box.conf.item() for box in res.boxes), default=0), 3)
+                    pole_result[modelo_nome] = (max_conf > 0, max_conf)
+                else:
+                    class_confidences = {res.names[int(box.cls)]: (round(box.conf.item(), 3) > 0, round(box.conf.item(), 3)) for box in res.boxes}
+                    pole_result[modelo_nome] = class_confidences
 
         pole_results.append({
             "PhotoId": photo_id,
@@ -64,14 +64,11 @@ async def process_pole(pole) -> Dict:
         })
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
-    gc.collect() 
+    gc.collect()
     return output
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    #pole_tasks = [process_pole(pole) for pole in request.Poles]
-    #pole_results = await asyncio.gather(*pole_tasks)
-
     batch_size = 10
     pole_results = []
 
@@ -80,7 +77,7 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
         pole_tasks = [process_pole(pole) for pole in batch]
         batch_results = await asyncio.gather(*pole_tasks)
         pole_results.extend(batch_results)
-        gc.collect() 
+        gc.collect()
 
     os.makedirs('results', exist_ok=True)
     response = {str(solicitacao_id): pole_results}
