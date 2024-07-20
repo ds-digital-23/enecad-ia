@@ -34,9 +34,29 @@ async def predict_model(model, images):
             return await asyncio.to_thread(model.predict, images)
 
 
+
+async def check_image_exists(url: str) -> bool:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.head(url) as response:
+                return response.status == 200
+    except Exception as e:
+        logging.error(f"Erro ao verificar URL {url}: {e}")
+        return False
+    
 async def process_pole(pole) -> Dict:
-    images = [photo.URL for photo in pole.Photos]
-    photo_ids = [photo.PhotoId for photo in pole.Photos]
+    valid_images = []
+    photo_ids = []
+    for photo in pole.Photos:
+        if await check_image_exists(photo.URL):
+            valid_images.append(photo.URL)
+            photo_ids.append(photo.PhotoId)
+        else:
+            logging.warning(f"Imagem inválida: {photo.URL}")
+    if not valid_images:
+        return {"PoleId": pole.PoleId, "Photos": []}
+
+    images = valid_images
     tasks = [predict_model(model, images) for model in modelos]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
