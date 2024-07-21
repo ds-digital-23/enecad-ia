@@ -34,7 +34,6 @@ async def predict_model(model, images):
             return await asyncio.to_thread(model.predict, images)
 
 
-
 async def check_image_exists(url: str) -> bool:
     try:
         async with aiohttp.ClientSession() as session:
@@ -43,6 +42,7 @@ async def check_image_exists(url: str) -> bool:
     except Exception as e:
         logging.error(f"Erro ao verificar URL {url}: {e}")
         return False
+    
     
 async def process_pole(pole) -> Dict:
     valid_images = []
