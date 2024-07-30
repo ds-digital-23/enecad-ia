@@ -5,6 +5,7 @@ import time
 import json
 import aiohttp
 import gc
+from collections import defaultdict
 from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
@@ -42,8 +43,8 @@ async def check_image_exists(url: str) -> bool:
     except Exception as e:
         logging.error(f"Erro ao verificar URL {url}: {e}")
         return False
-    
-    
+
+
 async def process_pole(pole) -> Dict:
     valid_images = []
     photo_ids = []
@@ -99,8 +100,10 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
         pole_results.extend(batch_results)
         gc.collect()
 
+    summarized_results = summarize_results(pole_results)
+
     os.makedirs('results', exist_ok=True)
-    response = {str(solicitacao_id): pole_results}
+    response = {str(solicitacao_id): summarized_results}
     response_file_path = os.path.join('results', f"solicitacao_{solicitacao_id}.json")
 
     with open(response_file_path, 'w') as response_file:
@@ -114,6 +117,39 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
 
     gc.collect()
     return response
+
+
+def summarize_results(pole_results):
+    summary_data = defaultdict(lambda: defaultdict(float))
+
+    for pole in pole_results:
+        pole_id = pole["PoleId"]
+        for photo in pole["Photos"]:
+            resultado = photo["Resultado"]
+            for key, value in resultado.items():
+                key_type = key.split('_')[1]
+                
+                if isinstance(value, tuple) and len(value) > 1 and key_type == "Poste":
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                elif isinstance(value, tuple) and len(value) > 1 and key_type == "UM":
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                elif isinstance(value, tuple) and len(value) > 1 and key_type == "IP":
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                elif isinstance(value, dict) and len(value) > 1 and key_type == "BT":
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                elif isinstance(value, dict) and len(value) > 1 and key_type == "MT":
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                elif isinstance(value, dict) and len(value) > 1 and key_type == "Equipamentos":
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+            
+    summarized_results = []
+    for pole_id, summary in summary_data.items():
+        summarized_results.append({
+            "Analitico": pole_results,
+            "Sintetico": summary
+        })
+
+    return summarized_results
 
 
 async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
