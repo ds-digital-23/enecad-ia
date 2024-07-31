@@ -16,6 +16,8 @@ from models.solicitacao_model import SolicitacaoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
+from motor.motor_asyncio import AsyncIOMotorClient
+from decouple import config
 
 logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
@@ -25,6 +27,15 @@ semaphore = asyncio.Semaphore(20)
 
 modelos = [YOLO(os.path.join('ia', file)) for file in os.listdir('ia') if file.endswith('.pt')]
 modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.listdir('ia') if file.endswith('.pt')]
+
+
+async def save_to_mongodb(data: Dict, solicitacao_id: int):
+    client = AsyncIOMotorClient(config('MONGO_URL'))
+    db = client["test"]  
+    collection = db["solicitacoes"]
+    result = await collection.insert_one({"solicitacao_id": solicitacao_id, "data": data})
+    client.close()  
+    return result.inserted_id
 
 
 async def predict_model(model, images):
@@ -102,12 +113,9 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
 
     summarized_results = summarize_results(pole_results)
 
-    os.makedirs('results', exist_ok=True)
     response = {str(solicitacao_id): summarized_results}
-    response_file_path = os.path.join('results', f"solicitacao_{solicitacao_id}.json")
-
-    with open(response_file_path, 'w') as response_file:
-        json.dump(response, response_file, indent=4)
+    inserted_id = await save_to_mongodb(response, solicitacao_id)
+    print(f"Resultado salvo no MongoDB com ID: {inserted_id}")
 
     if request.webhook_url:
         async with aiohttp.ClientSession() as session:
@@ -145,8 +153,8 @@ def summarize_results(pole_results):
     summarized_results = []
     for pole_id, summary in summary_data.items():
         summarized_results.append({
-            "Analitico": pole_results,
-            "Sintetico": summary
+            "Poste_ID": pole_id,
+            "Resultado": summary
         })
 
     return summarized_results
@@ -191,7 +199,7 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
-@router.get("/status/{solicitacao_id}", response_model=List[SolicitacaoCreate])
+@router.get("/status/{solicitacao_id}")#, response_model=List[SolicitacaoCreate])
 async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
@@ -202,10 +210,14 @@ async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), u
             raise HTTPException(status_code=404, detail="Nenhuma solicitação encontrada")
 
         if solicitacao.status == "Concluído":
-            response_file_path = os.path.join('results', f"solicitacao_{solicitacao_id}.json")
-            if not os.path.exists(response_file_path):
+            client = AsyncIOMotorClient(config('MONGO_URL'))
+            db = client["test"]  
+            collection = db["solicitacoes"] 
+            document = await collection.find_one({"solicitacao_id": solicitacao_id})
+            client.close() 
+            if not document:
                 raise HTTPException(status_code=404, detail="Arquivo de resultado não encontrado") 
-            return FileResponse(path=response_file_path, filename=f"solicitacao_{solicitacao_id}.json", media_type='application/json')
+            return document["data"]
 
         return [solicitacao]
 
