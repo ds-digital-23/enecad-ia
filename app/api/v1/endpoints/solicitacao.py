@@ -2,13 +2,11 @@ import logging
 import os
 import asyncio
 import time
-import json
 import aiohttp
 import gc
 from collections import defaultdict
 from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from ultralytics import YOLO
@@ -23,7 +21,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 
 router = APIRouter()
-semaphore = asyncio.Semaphore(20)
+semaphore = asyncio.Semaphore(5)
 
 modelos = [YOLO(os.path.join('ia', file)) for file in os.listdir('ia') if file.endswith('.pt')]
 modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.listdir('ia') if file.endswith('.pt')]
@@ -101,7 +99,7 @@ async def process_pole(pole) -> Dict:
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    batch_size = 10
+    batch_size = 5
     pole_results = []
 
     for i in range(0, len(request.Poles), batch_size):
@@ -183,7 +181,7 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
     start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
-    if total_poles > 500:
+    if total_poles > 100:
         raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 500.")
 
     nova_solicitacao: SolicitacaoModel = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
