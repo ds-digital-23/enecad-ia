@@ -132,7 +132,7 @@ def summarize_results(pole_results):
         pole_id = pole["PoleId"]
         for photo in pole["Photos"]:
             resultado = photo["Resultado"]
-            for key, value in resultado.items():
+            for key, value in resultado.items():   
                 key_type = key.split('_')[1]
                 
                 if isinstance(value, tuple) and len(value) > 1 and key_type == "Poste":
@@ -141,12 +141,21 @@ def summarize_results(pole_results):
                     summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
                 elif isinstance(value, tuple) and len(value) > 1 and key_type == "IP":
                     summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                elif isinstance(value, dict) and len(value) > 1 and key_type == "BT":
-                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
-                elif isinstance(value, dict) and len(value) > 1 and key_type == "MT":
-                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
-                elif isinstance(value, dict) and len(value) > 1 and key_type == "Equipamentos":
-                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                elif len(value) > 1 and key_type == "BT":
+                    if isinstance(value, dict):
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                    else:
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                elif len(value) > 1 and key_type == "MT":
+                    if isinstance(value, dict):
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                    else:
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                elif len(value) > 1 and key_type == "Equipamentos":
+                    if isinstance(value, dict):
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                    else:
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
             
     summarized_results = []
     for pole_id, summary in summary_data.items():
