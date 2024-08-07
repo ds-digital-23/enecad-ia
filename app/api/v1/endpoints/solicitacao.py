@@ -25,6 +25,40 @@ semaphore = asyncio.Semaphore(5)
 
 modelos = [YOLO(os.path.join('ia', file)) for file in os.listdir('ia') if file.endswith('.pt')]
 modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.listdir('ia') if file.endswith('.pt')]
+model_names_map = {
+    'Poste_Distribuidora': 'Poste',
+    'Trafo': 'Equipamentos',
+    'Transformador': 'Equipamentos',
+    'Chave': 'Equipamentos',
+    'Seccionalizador': 'Equipamentos',
+    'Religador': 'Equipamentos',
+    'Regulador': 'Equipamentos',
+    'Para_raio': 'Equipamentos',
+    'Capacitor': 'Equipamentos',
+    'UM': 'UM',
+    'BT': 'BT', 
+    'BT_Convencional': 'BT',
+    'BT_Multiplexada': 'BT',
+    'BT_Space': 'BT',
+    'IP': 'IP',
+    'MT': 'MT',
+    'Pan_Poste_Distribuidora': 'Poste',
+    'Esp_Equipamentos': 'Equipamentos',
+    'Pan_UM': 'UM',
+    'Esp_BT': 'BT',
+    'Pan_BT': 'BT',
+    'Esp_IP': 'IP',
+    'Pan_MT': 'MT',
+    'Esp_MT': 'MT',
+    'Pan_IP': 'IP'
+}
+
+
+def is_model_selected(model, models_selected):
+    for name in model.names.values():
+        if model_names_map.get(name) in models_selected:
+            return True
+    return False
 
 
 async def save_to_mongodb(data: Dict, solicitacao_id: int):
@@ -54,7 +88,7 @@ async def check_image_exists(url: str) -> bool:
         return False
 
 
-async def process_pole(pole) -> Dict:
+async def process_pole(pole, models_selected) -> Dict:
     valid_images = []
     photo_ids = []
     for photo in pole.Photos:
@@ -65,16 +99,19 @@ async def process_pole(pole) -> Dict:
             logging.warning(f"Imagem inválida: {photo.URL}")
     if not valid_images:
         return {"PoleId": pole.PoleId, "Photos": []}
-
     images = valid_images
-    tasks = [predict_model(model, images) for model in modelos]
+    
+    filtered_models = [model for model in modelos if is_model_selected(model, models_selected)]
+    filtered_models_names = [model for model in modelos_nome if model_names_map.get(model) in models_selected]
+
+    tasks = [predict_model(model, images) for model in filtered_models]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     pole_results = []
     for idx, (photo_id, image) in enumerate(zip(photo_ids, images)):
         pole_result = {}
 
-        for i, modelo_nome in enumerate(modelos_nome):
+        for i, modelo_nome in enumerate(filtered_models_names):
             res = results[i][idx]
 
             if isinstance(res, Exception):
@@ -104,7 +141,7 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
 
     for i in range(0, len(request.Poles), batch_size):
         batch = request.Poles[i:i + batch_size]
-        pole_tasks = [process_pole(pole) for pole in batch]
+        pole_tasks = [process_pole(pole, request.Models) for pole in batch]
         batch_results = await asyncio.gather(*pole_tasks)
         pole_results.extend(batch_results)
         gc.collect()
@@ -117,16 +154,19 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
 
     if request.webhook_url:
         async with aiohttp.ClientSession() as session:
-            async with session.post(request.webhook_url, json=response) as resp:
+            async with session.post(str(request.webhook_url), json=response) as resp:
                 if resp.status != 200:
-                    logging.error(f"Falha ao enviar resultado para o webhook: {resp.status}")
+                    print(f"Falha ao enviar resultado para o webhook: {resp.status}")
+                else:
+                    print("Resultado enviado para o webhook")
 
     gc.collect()
     return response
 
 
 def summarize_results(pole_results):
-    summary_data = defaultdict(lambda: defaultdict(float))
+    summary_data = defaultdict(lambda: defaultdict(float))                                   
+    summary_spec = defaultdict(lambda: defaultdict(float))
 
     for pole in pole_results:
         pole_id = pole["PoleId"]
@@ -135,36 +175,27 @@ def summarize_results(pole_results):
             for key, value in resultado.items():   
                 key_type = key.split('_')[1]
                 
-                if isinstance(value, tuple) and len(value) > 1 and key_type == "Poste":
-                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                elif isinstance(value, tuple) and len(value) > 1 and key_type == "UM":
-                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                elif isinstance(value, tuple) and len(value) > 1 and key_type == "IP":
-                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                elif len(value) > 1 and key_type == "BT":
-                    if isinstance(value, dict):
+                if len(value) >= 1:
+                    if isinstance(value, tuple):
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                    elif isinstance(value, dict):
+                        key_spec = next(iter(value))
+                        summary_spec[pole_id][key_spec] = max(summary_spec[pole_id][key_spec], value[key_spec][1])
                         summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
                     else:
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                elif len(value) > 1 and key_type == "MT":
-                    if isinstance(value, dict):
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
-                    else:
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                elif len(value) > 1 and key_type == "Equipamentos":
-                    if isinstance(value, dict):
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
-                    else:
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                        print('Tipo não reconhecido.')
             
-    summarized_results = []
-    for pole_id, summary in summary_data.items():
-        summarized_results.append({
+    summarized_results = [
+        {
             "Poste_ID": pole_id,
-            "Resultado": summary
-        })
+            "Resultado": summary,
+            "Especificidades": summary_spec[pole_id]
+        }
+        for pole_id, summary in summary_data.items()
+    ]
 
     return summarized_results
+
 
 
 async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
@@ -174,13 +205,13 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
             detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id)
             await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
             end_time = time.time()
-            print(f"- start_detection: {end_time - start_time:.2f} segundos")
+            print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
             gc.collect()
             return detection_results
         except Exception as e:
             await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
             end_time = time.time()
-            print(f"- start_detection: {end_time - start_time:.2f} segundos")
+            print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
             gc.collect()
             raise e
 
@@ -191,7 +222,9 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
     if total_poles > 100:
-        raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 500.")
+        raise HTTPException(status_code=400, detail="Número de postes não pode ser maior que 100.")
+    if total_photos > 1000:
+        raise HTTPException(status_code=400, detail="Número de fotos não pode ser maior que 1000.")
 
     nova_solicitacao: SolicitacaoModel = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
     async with db as session:
@@ -202,11 +235,11 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
 
         end_time = time.time()
-        print(f"- criar_solicitacao: {end_time - start_time:.2f} segundos")
+        print(f"- Solicitação criada em: {end_time - start_time:.2f} segundos")
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
-@router.get("/status/{solicitacao_id}")#, response_model=List[SolicitacaoCreate])
+@router.get("/status/{solicitacao_id}")#, response_model=SolicitacaoCreate)
 async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
