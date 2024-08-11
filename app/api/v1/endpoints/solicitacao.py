@@ -21,7 +21,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 
 router = APIRouter()
-semaphore = asyncio.Semaphore(5)
+semaphore = asyncio.Semaphore(2)
 
 modelos = [YOLO(os.path.join('ia', file)) for file in os.listdir('ia') if file.endswith('.pt')]
 modelos_nome = [file.replace('model_', '').replace('.pt', '') for file in os.listdir('ia') if file.endswith('.pt')]
@@ -74,9 +74,15 @@ async def save_to_mongodb(data: Dict, solicitacao_id: int):
 async def predict_model(model, images):
     async with semaphore:
         try:
-            return await asyncio.to_thread(model.predict, images)
+            result = await asyncio.to_thread(model.predict, images)
+            del model 
+            gc.collect()
+            return result
         except:
-            return await asyncio.to_thread(model.predict, images)
+            result = await asyncio.to_thread(model.predict, images)
+            del model 
+            gc.collect()
+            return result
 
 
 async def check_image_exists(url: str) -> bool:
@@ -132,12 +138,13 @@ async def process_pole(pole, models_selected) -> Dict:
         })
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
+    del filtered_models, results 
     gc.collect()
     return output
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    batch_size = 5
+    batch_size = 4
     pole_results = []
 
     for i in range(0, len(request.Poles), batch_size):
@@ -151,7 +158,7 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
 
     response = {str(solicitacao_id): summarized_results}
     inserted_id = await save_to_mongodb(response, solicitacao_id)
-    print(f"Resultado salvo no MongoDB com ID: {inserted_id}")
+    print(f"--- Resultado salvo com ID: {inserted_id}")
 
     if request.webhook_url:
         async with aiohttp.ClientSession() as session:
@@ -195,6 +202,8 @@ def summarize_results(pole_results):
         for pole_id, summary in summary_data.items()
     ]
 
+    del summary_data, summary_spec
+    gc.collect() 
     return summarized_results
 
 
@@ -236,7 +245,8 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
 
         end_time = time.time()
-        print(f"- Solicitação criada em: {end_time - start_time:.2f} segundos")
+        gc.collect()
+        print(f"- Solicitação {nova_solicitacao.id} criada em: {end_time - start_time:.2f} segundos")
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
