@@ -62,53 +62,53 @@ def print_memory_usage(label: str):
 
 
 def is_model_selected(model, models_selected):
-    print_memory_usage("is_model_selected - start")
+    #print_memory_usage("is_model_selected - start")
     for name in model.names.values():
         if model_names_map.get(name) in models_selected:
-            print_memory_usage("is_model_selected - end")
+            #print_memory_usage("is_model_selected - end")
             return True
-    print_memory_usage("is_model_selected - end")
+    #print_memory_usage("is_model_selected - end")
     return False
 
 
 async def save_to_mongodb(data: Dict, solicitacao_id: int):
-    print_memory_usage("save_to_mongodb - start")
+    #print_memory_usage("save_to_mongodb - start")
     async with AsyncIOMotorClient(config('MONGO_URL')) as client:
         db = client["test"]  
         collection = db["solicitacoes"]
         result = await collection.insert_one({"solicitacao_id": solicitacao_id, "data": data})
-        print_memory_usage("save_to_mongodb - end")
+        #print_memory_usage("save_to_mongodb - end")
         return result.inserted_id
 
 
 async def predict_model(model, images):
-    print_memory_usage("predict_model - start")
+    #print_memory_usage("predict_model - start")
     async with predict_model_semaphore:
         try:
             result = await asyncio.to_thread(model.predict, images)
-            print_memory_usage("predict_model - end")
+            #print_memory_usage("predict_model - end")
             return result
         except Exception as e:
             logging.error(f"Erro na predição: {e}")
-            print_memory_usage("predict_model - end")
+            #print_memory_usage("predict_model - end")
             return e
 
 
 async def check_image_exists(url: str) -> bool:
-    print_memory_usage("check_image_exists - start")
+    #print_memory_usage("check_image_exists - start")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.head(url) as response:
-                print_memory_usage("check_image_exists - end")
+                #print_memory_usage("check_image_exists - end")
                 return response.status == 200
     except Exception as e:
         logging.error(f"Erro ao verificar URL {url}: {e}")
-        print_memory_usage("check_image_exists - error")
+        #print_memory_usage("check_image_exists - error")
         return False
 
 
 async def process_pole(pole, models_selected) -> Dict:
-    print_memory_usage("process_pole - start")
+    #print_memory_usage("process_pole - start")
     valid_images = []
     photo_ids = []
     for photo in pole.Photos:
@@ -118,7 +118,7 @@ async def process_pole(pole, models_selected) -> Dict:
         else:
             logging.warning(f"Imagem inválida: {photo.URL}")
     if not valid_images:
-        print_memory_usage("process_pole - end")
+        #print_memory_usage("process_pole - end")
         return {"PoleId": pole.PoleId, "Photos": []}
     images = valid_images
     
@@ -154,12 +154,12 @@ async def process_pole(pole, models_selected) -> Dict:
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
     del filtered_models, results, images, valid_images, photo_ids, pole_results
     gc.collect()
-    print_memory_usage("process_pole - end")
+    #print_memory_usage("process_pole - end")
     return output
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    print_memory_usage("detect_objects - start")
+    #print_memory_usage("detect_objects - start")
     batch_size = 5
     pole_results = []
 
@@ -185,12 +185,12 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
                     print("Resultado enviado para o webhook")
 
     gc.collect()
-    print_memory_usage("detect_objects - end")
+    #print_memory_usage("detect_objects - end")
     return response
 
 
 def summarize_results(pole_results):
-    print_memory_usage("summarize_results - start")
+    #print_memory_usage("summarize_results - start")
     summary_data = defaultdict(lambda: defaultdict(float))                                   
     summary_spec = defaultdict(lambda: defaultdict(float))
 
@@ -222,12 +222,12 @@ def summarize_results(pole_results):
 
     del summary_data, summary_spec
     gc.collect()
-    print_memory_usage("summarize_results - end")
+    #print_memory_usage("summarize_results - end")
     return summarized_results
 
 
 async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
-    print_memory_usage("start_detection - start")
+    #print_memory_usage("start_detection - start")
     async with start_detection_semaphore:
         start_time = time.time()
         async with db as session:
@@ -237,24 +237,24 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
                 end_time = time.time()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
                 gc.collect()
-                print_memory_usage("start_detection - end")
+                #print_memory_usage("start_detection - end")
                 return detection_results
             except Exception as e:
                 await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
                 end_time = time.time()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
                 gc.collect()
-                print_memory_usage("start_detection - end")
+                #print_memory_usage("start_detection - end")
                 raise e
             finally:
                 del detection_results, poles_request
                 gc.collect()
-                print_memory_usage("start_detection - end")
+                #print_memory_usage("start_detection - end")
 
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
-    print_memory_usage("criar_solicitacao - start")
+    #print_memory_usage("criar_solicitacao - start")
     start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
@@ -274,13 +274,13 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         end_time = time.time()
         gc.collect()
         print(f"- Solicitação {nova_solicitacao.id} criada em: {end_time - start_time:.2f} segundos")
-        print_memory_usage("criar_solicitacao - end")
+        #print_memory_usage("criar_solicitacao - end")
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
 @router.get("/status/{solicitacao_id}")#, response_model=SolicitacaoCreate)
 async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
-    print_memory_usage("status - start")
+    #print_memory_usage("status - start")
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
         result = await session.execute(query)
@@ -297,15 +297,15 @@ async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), u
             client.close() 
             if not document:
                 raise HTTPException(status_code=404, detail="Arquivo de resultado não encontrado") 
-            print_memory_usage("status - end")
+            #print_memory_usage("status - end")
             return document["data"]
 
-        print_memory_usage("status - end")
+        #print_memory_usage("status - end")
         return [solicitacao]
 
 
 async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
-    print_memory_usage("update_status - start")
+    #print_memory_usage("update_status - start")
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
         result = await session.execute(query)
@@ -314,4 +314,4 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             solicitacao.status = status
             await session.commit()
             await session.refresh(solicitacao)
-    print_memory_usage("update_status - end")
+    #print_memory_usage("update_status - end")
