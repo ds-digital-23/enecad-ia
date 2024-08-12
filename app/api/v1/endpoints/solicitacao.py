@@ -22,7 +22,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
-predict_model_semaphore = asyncio.Semaphore(30)
+predict_model_semaphore = asyncio.Semaphore(10)
 
 modelos, modelos_nome = zip(*[(YOLO(os.path.join('ia', file)), file.replace('model_', '').replace('.pt', '')) for file in sorted(os.listdir('ia')) if file.endswith('.pt')])
 model_names_map = {
