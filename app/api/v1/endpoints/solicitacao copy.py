@@ -22,7 +22,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
-predict_model_semaphore = asyncio.Semaphore(30)
+predict_model_semaphore = asyncio.Semaphore(20)
 
 modelos, modelos_nome = zip(*[(YOLO(os.path.join('ia', file)), file.replace('model_', '').replace('.pt', '')) for file in sorted(os.listdir('ia')) if file.endswith('.pt')])
 model_names_map = {
@@ -73,15 +73,12 @@ def is_model_selected(model, models_selected):
 
 async def save_to_mongodb(data: Dict, solicitacao_id: int):
     print_memory_usage("save_to_mongodb - start")
-    client = AsyncIOMotorClient(config('MONGO_URL'))
-    try:
+    async with AsyncIOMotorClient(config('MONGO_URL')) as client:
         db = client["test"]  
         collection = db["solicitacoes"]
         result = await collection.insert_one({"solicitacao_id": solicitacao_id, "data": data})
-    finally:
-        client.close() 
-    print_memory_usage("save_to_mongodb - end")
-    return result.inserted_id
+        print_memory_usage("save_to_mongodb - end")
+        return result.inserted_id
 
 
 async def predict_model(model, images):
@@ -155,7 +152,7 @@ async def process_pole(pole, models_selected) -> Dict:
         })
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
-    del tasks, filtered_models, results, images, valid_images, photo_ids, pole_results, res
+    del filtered_models, results, images, valid_images, photo_ids, pole_results
     gc.collect()
     print_memory_usage("process_pole - end")
     return output
@@ -163,7 +160,7 @@ async def process_pole(pole, models_selected) -> Dict:
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
     print_memory_usage("detect_objects - start")
-    batch_size = 4
+    batch_size = 5
     pole_results = []
 
     for i in range(0, len(request.Poles), batch_size):
@@ -187,7 +184,6 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
                 else:
                     print("Resultado enviado para o webhook")
 
-    del summarized_results, pole_results, batch_results, pole_tasks, batch
     gc.collect()
     print_memory_usage("detect_objects - end")
     return response
@@ -224,7 +220,7 @@ def summarize_results(pole_results):
         for pole_id, summary in summary_data.items()
     ]
 
-    del summary_data, summary_spec, pole_results
+    del summary_data, summary_spec
     gc.collect()
     print_memory_usage("summarize_results - end")
     return summarized_results
@@ -239,17 +235,21 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
                 detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id)
                 await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
                 end_time = time.time()
-                gc.collect()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
+                gc.collect()
                 print_memory_usage("start_detection - end")
                 return detection_results
             except Exception as e:
-                detection_results = await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
+                await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
                 end_time = time.time()
-                gc.collect()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
+                gc.collect()
                 print_memory_usage("start_detection - end")
                 raise e
+            finally:
+                del detection_results, poles_request
+                gc.collect()
+                print_memory_usage("start_detection - end")
 
 
 @router.post("/", response_model=SolicitacaoCreate)
