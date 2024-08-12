@@ -16,7 +16,6 @@ from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
 from motor.motor_asyncio import AsyncIOMotorClient
 from decouple import config
-import psutil
 
 
 
@@ -24,7 +23,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
-predict_model_semaphore = asyncio.Semaphore(10)
+predict_model_semaphore = asyncio.Semaphore(20)
 
 modelos, modelos_nome = zip(*[(YOLO(os.path.join('ia', file)), file.replace('model_', '').replace('.pt', '')) for file in sorted(os.listdir('ia')) if file.endswith('.pt')])
 model_names_map = {
@@ -57,24 +56,14 @@ model_names_map = {
 }
 
 
-def print_memory_usage(label: str):
-    process = psutil.Process(os.getpid())
-    mem_info = process.memory_info()
-    print(f"[{label}] Memory Usage: {mem_info.rss / (1024 * 1024):.2f} MB")
-
-
 def is_model_selected(model, models_selected):
-    #print_memory_usage("is_model_selected - start")
     for name in model.names.values():
         if model_names_map.get(name) in models_selected:
-            #print_memory_usage("is_model_selected - end")
             return True
-    #print_memory_usage("is_model_selected - end")
     return False
 
 
 async def save_to_mongodb(data: Dict, solicitacao_id: int):
-    #print_memory_usage("save_to_mongodb - start")
     client = AsyncIOMotorClient(config('MONGO_URL'))
     try:
         db = client["test"]  
@@ -82,38 +71,30 @@ async def save_to_mongodb(data: Dict, solicitacao_id: int):
         result = await collection.insert_one({"solicitacao_id": solicitacao_id, "data": data})
     finally:
         client.close() 
-    #print_memory_usage("save_to_mongodb - end")
     return result.inserted_id
 
 
 async def predict_model(model, images):
-    #print_memory_usage("predict_model - start")
     async with predict_model_semaphore:
         try:
             result = await asyncio.to_thread(model.predict, images)
-            #print_memory_usage("predict_model - end")
             return result
         except Exception as e:
             logging.error(f"Erro na predição: {e}")
-            #print_memory_usage("predict_model - end")
             return e
 
 
 async def check_image_exists(url: str) -> bool:
-    #print_memory_usage("check_image_exists - start")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.head(url) as response:
-                #print_memory_usage("check_image_exists - end")
                 return response.status == 200
     except Exception as e:
         logging.error(f"Erro ao verificar URL {url}: {e}")
-        #print_memory_usage("check_image_exists - error")
         return False
 
 
 async def process_pole(pole, models_selected) -> Dict:
-    #print_memory_usage("process_pole - start")
     valid_images = []
     photo_ids = []
     for photo in pole.Photos:
@@ -123,13 +104,12 @@ async def process_pole(pole, models_selected) -> Dict:
         else:
             logging.warning(f"Imagem inválida: {photo.URL}")
     if not valid_images:
-        #print_memory_usage("process_pole - end")
         return {"PoleId": pole.PoleId, "Photos": []}
     images = valid_images
     
     filtered_models = [model for model in modelos if is_model_selected(model, models_selected)]
     filtered_models_names = [model for model in modelos_nome if model_names_map.get(model) in models_selected]
-
+    
     tasks = [predict_model(model, images) for model in filtered_models]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -159,12 +139,10 @@ async def process_pole(pole, models_selected) -> Dict:
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
     del tasks, filtered_models, results, images, valid_images, photo_ids, pole_results, res
     gc.collect()
-    #print_memory_usage("process_pole - end")
     return output
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    #print_memory_usage("detect_objects - start")
     batch_size = 4
     pole_results = []
 
@@ -191,12 +169,10 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
 
     del summarized_results, pole_results, batch_results, pole_tasks, batch
     gc.collect()
-    #print_memory_usage("detect_objects - end")
     return response
 
 
 def summarize_results(pole_results):
-    #print_memory_usage("summarize_results - start")
     summary_data = defaultdict(lambda: defaultdict(float))                                   
     summary_spec = defaultdict(lambda: defaultdict(float))
 
@@ -206,14 +182,16 @@ def summarize_results(pole_results):
             resultado = photo["Resultado"]
             for key, value in resultado.items():   
                 key_type = key.split('_')[1]
-                
                 if len(value) >= 1:
                     if isinstance(value, tuple):
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                        if key == 'Esp_MT':
+                            summary_spec[pole_id]['MT_Convencional'] = max(summary_spec[pole_id]['MT_Convencional'], value[1])
+                        else:
+                            summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
                     elif isinstance(value, dict):
-                        key_spec = next(iter(value))
-                        summary_spec[pole_id][key_spec] = max(summary_spec[pole_id][key_spec], value[key_spec][1])
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[next(iter(value))][1])
+                        for sub_key, sub_value in value.items():
+                            summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
+                            summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
                     else:
                         print('Tipo não reconhecido.')
             
@@ -228,12 +206,10 @@ def summarize_results(pole_results):
 
     del summary_data, summary_spec, pole_results
     gc.collect()
-    #print_memory_usage("summarize_results - end")
     return summarized_results
 
 
 async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
-    #print_memory_usage("start_detection - start")
     async with start_detection_semaphore:
         start_time = time.time()
         async with db as session:
@@ -243,20 +219,17 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
                 end_time = time.time()
                 gc.collect()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
-                #print_memory_usage("start_detection - end")
                 return detection_results
             except Exception as e:
                 detection_results = await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
                 end_time = time.time()
                 gc.collect()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
-                #print_memory_usage("start_detection - end")
                 raise e
 
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
-    #print_memory_usage("criar_solicitacao - start")
     start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
@@ -274,13 +247,11 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         end_time = time.time()
         gc.collect()
         print(f"- Solicitação {nova_solicitacao.id} criada em: {end_time - start_time:.2f} segundos")
-        #print_memory_usage("criar_solicitacao - end")
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
 @router.get("/status/{solicitacao_id}")#, response_model=SolicitacaoCreate)
 async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
-    #print_memory_usage("status - start")
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
         result = await session.execute(query)
@@ -297,15 +268,12 @@ async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), u
             client.close() 
             if not document:
                 raise HTTPException(status_code=404, detail="Arquivo de resultado não encontrado") 
-            #print_memory_usage("status - end")
             return document["data"]
 
-        #print_memory_usage("status - end")
         return [solicitacao]
 
 
 async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
-    #print_memory_usage("update_status - start")
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
         result = await session.execute(query)
@@ -314,4 +282,3 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             solicitacao.status = status
             await session.commit()
             await session.refresh(solicitacao)
-    #print_memory_usage("update_status - end")
