@@ -143,7 +143,7 @@ async def process_pole(pole, models_selected) -> Dict:
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int):
-    batch_size = 4
+    batch_size = 10
     pole_results = []
 
     for i in range(0, len(request.Poles), batch_size):
