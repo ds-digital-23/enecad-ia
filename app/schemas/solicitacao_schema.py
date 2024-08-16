@@ -14,7 +14,7 @@ class PoleSchema(BaseModel):
 
 class PolesRequest(BaseModel):
     Poles: List[PoleSchema]
-    Models: Optional[List[str]] = ["Poste", "UM", "BT","IP", "MT", "Equipamentos"]
+    Models: Optional[List[str]] = ["Poste", "UM", "BT", "IP", "MT", "Equipamentos"]
     webhook_url: Optional[HttpUrl] = None
 
     class Config:

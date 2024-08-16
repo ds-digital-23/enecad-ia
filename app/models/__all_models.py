@@ -1,2 +1,3 @@
 from models.usuario_model import UsuarioModel
 from models.solicitacao_model import SolicitacaoModel
+from models.arquivo_model import ArquivoModel

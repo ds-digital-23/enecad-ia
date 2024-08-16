@@ -9,12 +9,13 @@ from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import insert
 from ultralytics import YOLO
 from models.solicitacao_model import SolicitacaoModel
+from models.arquivo_model import ArquivoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
-from motor.motor_asyncio import AsyncIOMotorClient
 from decouple import config
 
 
@@ -25,10 +26,12 @@ router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
 predict_model_semaphore = asyncio.Semaphore(20)
 
+
 modelos, modelos_nome = zip(*[(YOLO(os.path.join('ia', file)), file.replace('model_', '').replace('.pt', '')) for file in sorted(os.listdir('ia')) if file.endswith('.pt')])
 model_names_map = {
+    'Poste': 'Poste',
     'Poste_Distribuidora': 'Poste',
-    'Trafo': 'Equipamentos',
+    'Poste_Prefeitura': 'Poste',
     'Transformador': 'Equipamentos',
     'Chave': 'Equipamentos',
     'Seccionalizador': 'Equipamentos',
@@ -40,19 +43,23 @@ model_names_map = {
     'BT': 'BT', 
     'BT_Convencional': 'BT',
     'BT_Multiplexada': 'BT',
+    'MT': 'MT',
     'MT_Space': 'MT',
     'MT_Convencional': 'MT',
     'IP': 'IP',
-    'MT': 'MT',
-    'Pan_Poste_Distribuidora': 'Poste',
-    'Esp_Equipamentos': 'Equipamentos',
-    'Pan_UM': 'UM',
+    'IP_Lampada_Acesa': 'IP',
     'Esp_BT': 'BT',
-    'Pan_BT': 'BT',
+    'Esp_Equipamentos': 'Equipamentos',
     'Esp_IP': 'IP',
-    'Pan_MT': 'MT',
+    'Esp_IP_Lampada_Acesa': 'IP',
     'Esp_MT': 'MT',
-    'Pan_IP': 'IP'
+    'Esp_Poste': 'Poste',
+    'Esp_UM': 'UM',
+    'Pan_BT': 'BT',
+    'Pan_IP': 'IP',
+    'Pan_MT': 'MT',
+    'Pan_Poste_Distribuidora': 'Poste',
+    'Pan_UM': 'UM'  
 }
 
 
@@ -63,15 +70,11 @@ def is_model_selected(model, models_selected):
     return False
 
 
-async def save_to_mongodb(data: Dict, solicitacao_id: int):
-    client = AsyncIOMotorClient(config('MONGO_URL'))
-    try:
-        db = client["test"]  
-        collection = db["solicitacoes"]
-        result = await collection.insert_one({"solicitacao_id": solicitacao_id, "data": data})
-    finally:
-        client.close() 
-    return result.inserted_id
+async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
+    query = insert(ArquivoModel).values(solicitacao_id=solicitacao_id, json=json)
+    await db.execute(query)
+    await db.commit()
+    return solicitacao_id
 
 
 async def predict_model(model, images):
@@ -142,7 +145,7 @@ async def process_pole(pole, models_selected) -> Dict:
     return output
 
 
-async def detect_objects(request: PolesRequest, solicitacao_id: int):
+async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSession):
     batch_size = 10
     pole_results = []
 
@@ -156,7 +159,7 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int):
     summarized_results = summarize_results(pole_results)
 
     response = {str(solicitacao_id): summarized_results}
-    inserted_id = await save_to_mongodb(response, solicitacao_id)
+    inserted_id = await save_to_postgresql(response, solicitacao_id, db)
     print(f"--- Resultado salvo com ID: {inserted_id}")
 
     if request.webhook_url:
@@ -182,15 +185,15 @@ def summarize_results(pole_results):
             resultado = photo["Resultado"]
             for key, value in resultado.items():   
                 key_type = key.split('_')[1]
+
+                print(key, key_type, value)
                 if len(value) >= 1:
                     if isinstance(value, tuple):
-                        if key == 'Esp_MT':
-                            summary_spec[pole_id]['MT_Convencional'] = max(summary_spec[pole_id]['MT_Convencional'], value[1])
-                        else:
-                            summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
                     elif isinstance(value, dict):
                         for sub_key, sub_value in value.items():
-                            summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
+                            if sub_key != 'UM':
+                                summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
                             summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
                     else:
                         print('Tipo não reconhecido.')
@@ -214,7 +217,7 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
         start_time = time.time()
         async with db as session:
             try:
-                detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id)
+                detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id, db=session)
                 await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
                 end_time = time.time()
                 gc.collect()
@@ -250,7 +253,7 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
-@router.get("/status/{solicitacao_id}")#, response_model=SolicitacaoCreate)
+@router.get("/status/{solicitacao_id}")
 async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
     async with db as session:
         query = select(SolicitacaoModel).filter(SolicitacaoModel.id == solicitacao_id)
@@ -261,14 +264,12 @@ async def status(solicitacao_id: int, db: AsyncSession = Depends(get_session), u
             raise HTTPException(status_code=404, detail="Nenhuma solicitação encontrada")
 
         if solicitacao.status == "Concluído":
-            client = AsyncIOMotorClient(config('MONGO_URL'))
-            db = client["test"]  
-            collection = db["solicitacoes"] 
-            document = await collection.find_one({"solicitacao_id": solicitacao_id})
-            client.close() 
-            if not document:
-                raise HTTPException(status_code=404, detail="Arquivo de resultado não encontrado") 
-            return document["data"]
+            query = select(ArquivoModel).filter(ArquivoModel.solicitacao_id == solicitacao_id)
+            result = await session.execute(query)
+            solicitacao_data = result.scalar_one_or_none()
+            if not solicitacao_data:
+                raise HTTPException(status_code=404, detail="Arquivo de resultado não encontrado")
+            return solicitacao_data.json
 
         return [solicitacao]
 
