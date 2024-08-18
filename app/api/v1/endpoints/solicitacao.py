@@ -29,37 +29,14 @@ predict_model_semaphore = asyncio.Semaphore(20)
 
 modelos, modelos_nome = zip(*[(YOLO(os.path.join('ia', file)), file.replace('model_', '').replace('.pt', '')) for file in sorted(os.listdir('ia')) if file.endswith('.pt')])
 model_names_map = {
-    'Poste': 'Poste',
-    'Poste_Distribuidora': 'Poste',
-    'Poste_Prefeitura': 'Poste',
-    'Transformador': 'Equipamentos',
-    'Chave': 'Equipamentos',
-    'Seccionalizador': 'Equipamentos',
-    'Religador': 'Equipamentos',
-    'Regulador': 'Equipamentos',
-    'Para_raio': 'Equipamentos',
-    'Capacitor': 'Equipamentos',
+    'Poste': 'Poste', 'Poste_Distribuidora': 'Poste', 'Poste_Prefeitura': 'Poste',
+    'Transformador': 'Equipamentos', 'Chave': 'Equipamentos', 'Seccionalizador': 'Equipamentos', 'Religador': 'Equipamentos', 'Regulador': 'Equipamentos', 'Para_raio': 'Equipamentos', 'Capacitor': 'Equipamentos',
     'UM': 'UM',
-    'BT': 'BT', 
-    'BT_Convencional': 'BT',
-    'BT_Multiplexada': 'BT',
-    'MT': 'MT',
-    'MT_Space': 'MT',
-    'MT_Convencional': 'MT',
-    'IP': 'IP',
-    'IP_Lampada_Acesa': 'IP',
-    'Esp_BT': 'BT',
-    'Esp_Equipamentos': 'Equipamentos',
-    'Esp_IP': 'IP',
-    'Esp_IP_Lampada_Acesa': 'IP',
-    'Esp_MT': 'MT',
-    'Esp_Poste': 'Poste',
-    'Esp_UM': 'UM',
-    'Pan_BT': 'BT',
-    'Pan_IP': 'IP',
-    'Pan_MT': 'MT',
-    'Pan_Poste': 'Poste',
-    'Pan_UM': 'UM'  
+    'BT': 'BT', 'BT_Convencional': 'BT','BT_Multiplexada': 'BT',
+    'MT': 'MT','MT_Space': 'MT','MT_Convencional': 'MT',
+    'IP': 'IP','IP_Lampada_Acesa': 'IP',
+    'Esp_BT': 'BT','Esp_Equipamentos': 'Equipamentos','Esp_IP': 'IP','Esp_IP_Lampada_Acesa': 'IP','Esp_MT': 'MT','Esp_Poste': 'Poste','Esp_UM': 'UM',
+    'Pan_BT': 'BT','Pan_IP': 'IP','Pan_MT': 'MT','Pan_Poste': 'Poste','Pan_UM': 'UM'  
 }
 
 
@@ -246,6 +223,15 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+    for pole in poles_request.Poles:
+        seen_urls = set()
+        unique_photos = []
+        for photo in pole.Photos:
+            if photo.URL not in seen_urls:
+                unique_photos.append(photo)
+                seen_urls.add(photo.URL)
+        pole.Photos = unique_photos
+    
     start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
