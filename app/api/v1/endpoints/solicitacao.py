@@ -105,10 +105,12 @@ async def process_pole(pole, models_selected) -> Dict:
             else:
                 if len(res.names) == 1:
                     max_conf = round(max((box.conf.item() for box in res.boxes), default=0), 3)
-                    pole_result[modelo_nome] = (max_conf > 0, max_conf)
+                    if max_conf > 0.0:
+                        pole_result[modelo_nome] = (max_conf > 0, max_conf)
                 else:
                     class_confidences = {res.names[int(box.cls)]: (round(box.conf.item(), 3) > 0, round(box.conf.item(), 3)) for box in res.boxes}
-                    pole_result[modelo_nome] = class_confidences
+                    if class_confidences:
+                        pole_result[modelo_nome] = class_confidences
 
         pole_results.append({
             "PhotoId": photo_id,
