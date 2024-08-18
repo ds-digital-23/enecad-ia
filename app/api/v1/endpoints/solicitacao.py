@@ -58,7 +58,7 @@ model_names_map = {
     'Pan_BT': 'BT',
     'Pan_IP': 'IP',
     'Pan_MT': 'MT',
-    'Pan_Poste_Distribuidora': 'Poste',
+    'Pan_Poste': 'Poste',
     'Pan_UM': 'UM'  
 }
 
@@ -160,7 +160,6 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
 
     response = {str(solicitacao_id): summarized_results}
     inserted_id = await save_to_postgresql(response, solicitacao_id, db)
-    print(f"--- Resultado salvo com ID: {inserted_id}")
 
     if request.webhook_url:
         async with aiohttp.ClientSession() as session:
@@ -181,12 +180,13 @@ def summarize_results(pole_results):
 
     for pole in pole_results:
         pole_id = pole["PoleId"]
+        
         for photo in pole["Photos"]:
             resultado = photo["Resultado"]
+            
             for key, value in resultado.items():   
                 key_type = key.split('_')[1]
-
-                print(key, key_type, value)
+                
                 if len(value) >= 1:
                     if isinstance(value, tuple):
                         summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
@@ -197,12 +197,25 @@ def summarize_results(pole_results):
                             summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
                     else:
                         print('Tipo não reconhecido.')
-            
+
+    final_summary_spec = {}
+    for pole_id, spec in summary_spec.items():
+        final_summary_spec[pole_id] = spec.copy()
+        for category in ["BT", "MT", "Poste"]:
+            category_items = {k: v for k, v in spec.items() if category in k}
+            if category_items:
+                max_item = max(category_items, key=category_items.get)
+                for item in category_items:
+                    if item != max_item:
+                        final_summary_spec[pole_id].pop(item, None)
+
+    final_summary_spec[pole_id] = dict(sorted(final_summary_spec[pole_id].items()))
+
     summarized_results = [
         {
             "Poste_ID": pole_id,
             "Resultado": summary,
-            "Especificidades": summary_spec[pole_id]
+            "Especificidades": final_summary_spec.get(pole_id, {})
         }
         for pole_id, summary in summary_data.items()
     ]
@@ -283,3 +296,4 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             solicitacao.status = status
             await session.commit()
             await session.refresh(solicitacao)
+
