@@ -208,11 +208,11 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         unique_photos = []
         for photo in pole.Photos:
             if photo.URL not in seen_urls:
-                if await check_image_exists(photo.URL): 
-                    unique_photos.append(photo)
-                    seen_urls.add(photo.URL)
-                else:
-                    logging.warning(f"Imagem não encontrada ou URL inválida: {photo.URL}")
+                #if await check_image_exists(photo.URL): 
+                unique_photos.append(photo)
+                seen_urls.add(photo.URL)
+                #else:
+                #    logging.warning(f"Imagem não encontrada ou URL inválida: {photo.URL}")
         pole.Photos = unique_photos
     
     total_poles = len(poles_request.Poles)
