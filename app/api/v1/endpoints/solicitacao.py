@@ -5,7 +5,7 @@ import time
 import aiohttp
 import gc
 from collections import defaultdict
-from typing import List, Dict
+from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -16,7 +16,6 @@ from models.arquivo_model import ArquivoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
-from decouple import config
 
 
 
@@ -24,27 +23,25 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
-predict_model_semaphore = asyncio.Semaphore(20)
+predict_model_semaphore = asyncio.Semaphore(12)
 
 
-modelos, modelos_nome = zip(*[(YOLO(os.path.join('ia', file)), file.replace('model_', '').replace('.pt', '')) for file in sorted(os.listdir('ia')) if file.endswith('.pt')])
-model_names_map = {
-    'Poste': 'Poste', 'Poste_Distribuidora': 'Poste', 'Poste_Prefeitura': 'Poste',
-    'Transformador': 'Equipamentos', 'Chave': 'Equipamentos', 'Seccionalizador': 'Equipamentos', 'Religador': 'Equipamentos', 'Regulador': 'Equipamentos', 'Para_raio': 'Equipamentos', 'Capacitor': 'Equipamentos',
-    'UM': 'UM',
-    'BT': 'BT', 'BT_Convencional': 'BT','BT_Multiplexada': 'BT',
-    'MT': 'MT','MT_Space': 'MT','MT_Convencional': 'MT',
-    'IP': 'IP','IP_Lampada_Acesa': 'IP',
-    'Esp_BT': 'BT','Esp_Equipamentos': 'Equipamentos','Esp_IP': 'IP','Esp_IP_Lampada_Acesa': 'IP','Esp_MT': 'MT','Esp_Poste': 'Poste','Esp_UM': 'UM',
-    'Pan_BT': 'BT','Pan_IP': 'IP','Pan_MT': 'MT','Pan_Poste': 'Poste','Pan_UM': 'UM'  
-}
 
+def load_requested_models(models_selected):
+    available_models = {
+        file.replace('model_', '').replace('.pt', ''): file
+        for file in sorted(os.listdir('ia'))
+        if file.endswith('.pt')
+    }
 
-def is_model_selected(model, models_selected):
-    for name in model.names.values():
-        if model_names_map.get(name) in models_selected:
-            return True
-    return False
+    modelos, modelos_nome = zip(*[
+        (YOLO(os.path.join('ia', available_models[a_model])), a_model)
+        for a_model in available_models
+        for model_name in models_selected
+        if model_name in a_model
+    ])
+
+    return list(modelos), list(modelos_nome)
 
 
 async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
@@ -74,30 +71,18 @@ async def check_image_exists(url: str) -> bool:
         return False
 
 
-async def process_pole(pole, models_selected) -> Dict:
-    valid_images = []
-    photo_ids = []
-    for photo in pole.Photos:
-        if await check_image_exists(photo.URL):
-            valid_images.append(photo.URL)
-            photo_ids.append(photo.PhotoId)
-        else:
-            logging.warning(f"Imagem inválida: {photo.URL}")
-    if not valid_images:
-        return {"PoleId": pole.PoleId, "Photos": []}
-    images = valid_images
+async def process_pole(pole, modelos, modelos_nome) -> Dict:
+    images = [photo.URL for photo in pole.Photos] 
+    photo_ids = [photo.PhotoId for photo in pole.Photos]
     
-    filtered_models = [model for model in modelos if is_model_selected(model, models_selected)]
-    filtered_models_names = [model for model in modelos_nome if model_names_map.get(model) in models_selected]
-    
-    tasks = [predict_model(model, images) for model in filtered_models]
+    tasks = [predict_model(model, images) for model in modelos]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     pole_results = []
     for idx, (photo_id, image) in enumerate(zip(photo_ids, images)):
         pole_result = {}
 
-        for i, modelo_nome in enumerate(filtered_models_names):
+        for i, modelo_nome in enumerate(modelos_nome):
             res = results[i][idx]
 
             if isinstance(res, Exception):
@@ -119,24 +104,22 @@ async def process_pole(pole, models_selected) -> Dict:
         })
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
-    del tasks, filtered_models, results, images, valid_images, photo_ids, pole_results, res
-    gc.collect()
+
     return output
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSession):
-    batch_size = 10
+    modelos, modelos_nome = load_requested_models(request.Models)
+    batch_size = 12
     pole_results = []
 
     for i in range(0, len(request.Poles), batch_size):
         batch = request.Poles[i:i + batch_size]
-        pole_tasks = [process_pole(pole, request.Models) for pole in batch]
+        pole_tasks = [process_pole(pole, modelos, modelos_nome) for pole in batch]
         batch_results = await asyncio.gather(*pole_tasks)
         pole_results.extend(batch_results)
-        gc.collect()
 
     summarized_results = summarize_results(pole_results)
-
     response = {str(solicitacao_id): summarized_results}
     inserted_id = await save_to_postgresql(response, solicitacao_id, db)
 
@@ -165,7 +148,6 @@ def summarize_results(pole_results):
             
             for key, value in resultado.items():   
                 key_type = key.split('_')[1]
-                
                 if len(value) >= 1:
                     if isinstance(value, tuple):
                         summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
@@ -174,9 +156,8 @@ def summarize_results(pole_results):
                             if sub_key != 'UM':
                                 summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
                             summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
-                    else:
-                        print('Tipo não reconhecido.')
 
+    # Refina resultado em Especificidades
     final_summary_spec = {}
     for pole_id, spec in summary_spec.items():
         final_summary_spec[pole_id] = spec.copy()
@@ -188,8 +169,6 @@ def summarize_results(pole_results):
                     if item != max_item:
                         final_summary_spec[pole_id].pop(item, None)
 
-    final_summary_spec[pole_id] = dict(sorted(final_summary_spec[pole_id].items()))
-
     summarized_results = [
         {
             "Poste_ID": pole_id,
@@ -199,8 +178,6 @@ def summarize_results(pole_results):
         for pole_id, summary in summary_data.items()
     ]
 
-    del summary_data, summary_spec, pole_results
-    gc.collect()
     return summarized_results
 
 
@@ -211,30 +188,33 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
             try:
                 detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id, db=session)
                 await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
-                end_time = time.time()
-                gc.collect()
-                print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
-                return detection_results
             except Exception as e:
-                detection_results = await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
+                await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
+                raise e
+            finally:
                 end_time = time.time()
                 gc.collect()
                 print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
-                raise e
+        return detection_results
 
 
 @router.post("/", response_model=SolicitacaoCreate)
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+    start_time = time.time()
+
+    # Retira imagens repetidas e verifica se a URL existe
     for pole in poles_request.Poles:
         seen_urls = set()
         unique_photos = []
         for photo in pole.Photos:
             if photo.URL not in seen_urls:
-                unique_photos.append(photo)
-                seen_urls.add(photo.URL)
+                if await check_image_exists(photo.URL): 
+                    unique_photos.append(photo)
+                    seen_urls.add(photo.URL)
+                else:
+                    logging.warning(f"Imagem não encontrada ou URL inválida: {photo.URL}")
         pole.Photos = unique_photos
     
-    start_time = time.time()
     total_poles = len(poles_request.Poles)
     total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
     if total_photos > 800:
@@ -245,7 +225,7 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         session.add(nova_solicitacao)
         await session.commit()
         await session.refresh(nova_solicitacao)
-
+        
         background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
 
         end_time = time.time()
@@ -284,4 +264,3 @@ async def update_status(solicitacao_id: int, status: str, db: AsyncSession):
             solicitacao.status = status
             await session.commit()
             await session.refresh(solicitacao)
-
