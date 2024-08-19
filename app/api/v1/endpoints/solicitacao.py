@@ -115,6 +115,16 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
 
     for i in range(0, len(request.Poles), batch_size):
         batch = request.Poles[i:i + batch_size]
+        # Verifica se as URLs das imagens existem
+        for pole in batch:
+            unique_photos = []
+            for photo in pole.Photos:
+                if await check_image_exists(photo.URL):
+                    unique_photos.append(photo)
+                else:
+                    logging.warning(f"Imagem não encontrada ou URL inválida: {photo.URL}")
+            pole.Photos = unique_photos
+
         pole_tasks = [process_pole(pole, modelos, modelos_nome) for pole in batch]
         batch_results = await asyncio.gather(*pole_tasks)
         pole_results.extend(batch_results)
@@ -202,17 +212,14 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
 async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
     start_time = time.time()
 
-    # Retira imagens repetidas e verifica se a URL existe
+    # Retira imagens repetidas
     for pole in poles_request.Poles:
         seen_urls = set()
         unique_photos = []
         for photo in pole.Photos:
             if photo.URL not in seen_urls:
-                #if await check_image_exists(photo.URL): 
                 unique_photos.append(photo)
                 seen_urls.add(photo.URL)
-                #else:
-                #    logging.warning(f"Imagem não encontrada ou URL inválida: {photo.URL}")
         pole.Photos = unique_photos
     
     total_poles = len(poles_request.Poles)
