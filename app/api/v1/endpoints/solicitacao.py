@@ -29,7 +29,6 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
 predict_model_semaphore = asyncio.Semaphore(12)
-reader = easyocr.Reader(['pt'])
 
 
 def load_requested_models(models_selected):
@@ -66,7 +65,7 @@ async def predict_model(model, images):
             return e
 
 
-async def perform_ocr(image_url: str) -> str:
+async def perform_ocr(image_url: str, reader) -> str:
     try:
         response = requests.get(image_url)
         img = Image.open(BytesIO(response.content)).convert("RGB")
@@ -165,6 +164,8 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
 
 
 async def summarize_results(pole_results):
+    reader = easyocr.Reader(['pt'])
+
     summary_data = defaultdict(lambda: defaultdict(float))
     summary_spec = defaultdict(lambda: defaultdict(float))
     photo_counts = defaultdict(lambda: defaultdict(int))
@@ -179,7 +180,7 @@ async def summarize_results(pole_results):
             image_url = photo["URL"]
             counted_key_types = set()
 
-            texto_extraido = await perform_ocr(image_url)
+            texto_extraido = await perform_ocr(image_url, reader)
             accumulated_text += f"{texto_extraido} "
 
             for key, value in resultado.items():
