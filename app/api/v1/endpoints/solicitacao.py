@@ -16,6 +16,11 @@ from models.arquivo_model import ArquivoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
+import easyocr
+from PIL import Image
+from io import BytesIO
+import requests
+import numpy as np
 
 
 
@@ -24,7 +29,7 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
 predict_model_semaphore = asyncio.Semaphore(12)
-
+reader = easyocr.Reader(['pt'])
 
 
 def load_requested_models(models_selected):
@@ -59,6 +64,20 @@ async def predict_model(model, images):
         except Exception as e:
             logging.error(f"Erro na predição: {e}")
             return e
+
+
+async def perform_ocr(image_url: str) -> str:
+    try:
+        response = requests.get(image_url)
+        img = Image.open(BytesIO(response.content)).convert("RGB")
+        img = img.resize((img.width // 2, img.height // 2))
+        img_array = np.array(img)
+        result = reader.readtext(img_array, detail=0)  
+        text = ' '.join(result)
+        return text
+    except Exception as e:
+        logging.error(f"Erro ao realizar OCR na imagem {image_url}: {e}")
+        return ""
 
 
 async def check_image_exists(url: str) -> bool:
@@ -96,11 +115,11 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
                     class_confidences = {res.names[int(box.cls)]: (round(box.conf.item(), 3) > 0, round(box.conf.item(), 3)) for box in res.boxes}
                     if class_confidences:
                         pole_result[modelo_nome] = class_confidences
-
+        
         pole_results.append({
             "PhotoId": photo_id,
             "URL": image,
-            "Resultado": pole_result
+            "Resultado": pole_result,
         })
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
@@ -115,7 +134,6 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
 
     for i in range(0, len(request.Poles), batch_size):
         batch = request.Poles[i:i + batch_size]
-        # Verifica se as URLs das imagens existem
         for pole in batch:
             unique_photos = []
             for photo in pole.Photos:
@@ -129,7 +147,7 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
         batch_results = await asyncio.gather(*pole_tasks)
         pole_results.extend(batch_results)
 
-    summarized_results = summarize_results(pole_results)
+    summarized_results = await summarize_results(pole_results)
     response = {str(solicitacao_id): summarized_results}
     inserted_id = await save_to_postgresql(response, solicitacao_id, db)
 
@@ -146,47 +164,59 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
     return response
 
 
-def summarize_results(pole_results):
-    summary_data = defaultdict(lambda: defaultdict(float))                                   
+async def summarize_results(pole_results):
+    summary_data = defaultdict(lambda: defaultdict(float))
     summary_spec = defaultdict(lambda: defaultdict(float))
+    photo_counts = defaultdict(lambda: defaultdict(int))
 
     for pole in pole_results:
         pole_id = pole["PoleId"]
-        
+        accumulated_text = ""
+        num_photos = len(pole["Photos"])
+
         for photo in pole["Photos"]:
             resultado = photo["Resultado"]
-            
-            for key, value in resultado.items():   
-                key_type = key.split('_')[1]
-                if len(value) >= 1:
-                    if isinstance(value, tuple):
-                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
-                    elif isinstance(value, dict):
-                        for sub_key, sub_value in value.items():
-                            if sub_key != 'UM':
-                                summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
-                            summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
+            image_url = photo["URL"]
+            counted_key_types = set()
 
-    # Refina resultado em Especificidades
-    final_summary_spec = {}
-    for pole_id, spec in summary_spec.items():
-        final_summary_spec[pole_id] = spec.copy()
+            texto_extraido = await perform_ocr(image_url)
+            accumulated_text += f"{texto_extraido} "
+
+            for key, value in resultado.items():
+                key_type = key.split('_')[1]
+
+                if key_type not in counted_key_types:
+                    photo_counts[pole_id][key_type] += 1
+                    counted_key_types.add(key_type)
+
+                if isinstance(value, tuple):
+                    summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], value[1])
+                elif isinstance(value, dict):
+                    for sub_key, sub_value in value.items():
+                        if sub_key != 'UM':
+                            summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
+                        summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
+
+        if accumulated_text.strip():
+            summary_spec[pole_id]["Texto"] = accumulated_text.strip()
+
+    summarized_results = []
+
+    for pole_id in summary_data:
+        final_data = {k: v for k, v in summary_data[pole_id].items() if photo_counts[pole_id][k] > 1 or num_photos == 1}
+        final_spec = summary_spec.get(pole_id, {}).copy()
+
         for category in ["BT", "MT", "Poste"]:
-            category_items = {k: v for k, v in spec.items() if category in k}
+            category_items = {k: v for k, v in final_spec.items() if category in k}
             if category_items:
                 max_item = max(category_items, key=category_items.get)
-                for item in category_items:
-                    if item != max_item:
-                        final_summary_spec[pole_id].pop(item, None)
+                final_spec = {k: v for k, v in final_spec.items() if k == max_item or k not in category_items}
 
-    summarized_results = [
-        {
+        summarized_results.append({
             "Poste_ID": pole_id,
-            "Resultado": summary,
-            "Especificidades": final_summary_spec.get(pole_id, {})
-        }
-        for pole_id, summary in summary_data.items()
-    ]
+            "Resultado": final_data,
+            "Especificidades": final_spec
+        })
 
     return summarized_results
 
