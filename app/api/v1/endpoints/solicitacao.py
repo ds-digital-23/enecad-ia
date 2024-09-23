@@ -5,7 +5,7 @@ import time
 import aiohttp
 import gc
 from collections import defaultdict
-from typing import Dict
+from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -16,11 +16,6 @@ from models.arquivo_model import ArquivoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
-import easyocr
-from PIL import Image
-from io import BytesIO
-import requests
-import numpy as np
 
 
 
@@ -29,6 +24,80 @@ logging.getLogger('ultralytics').setLevel(logging.ERROR)
 router = APIRouter()
 start_detection_semaphore = asyncio.Semaphore(1)
 predict_model_semaphore = asyncio.Semaphore(12)
+
+
+@router.post("/", response_model=SolicitacaoCreate)
+async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
+    start_time = time.time()
+
+    for pole in poles_request.Poles:
+        pole.Photos = list({photo.URL: photo for photo in pole.Photos}.values())
+    
+    total_poles = len(poles_request.Poles)
+    total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
+    if total_photos > 800:
+        raise HTTPException(status_code=400, detail="Número de fotos não pode ser maior que 800.")
+
+    nova_solicitacao: SolicitacaoModel = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
+    async with db as session:
+        session.add(nova_solicitacao)
+        await session.commit()
+        await session.refresh(nova_solicitacao)
+        
+        background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
+
+        end_time = time.time()
+        print(f"- Solicitação {nova_solicitacao.id} criada em: {end_time - start_time:.2f} segundos")
+        return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
+
+
+async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
+    async with start_detection_semaphore:
+        start_time = time.time()
+        async with db as session:
+            try:
+                detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id, db=session)
+                await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
+            except Exception as e:
+                await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
+                raise e
+            finally:
+                end_time = time.time()
+                gc.collect()
+                print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
+        return detection_results
+
+
+async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSession):
+    modelos, modelos_nome = load_requested_models(request.Models)
+    pole_results = []
+
+    async with aiohttp.ClientSession() as session:
+        for pole in request.Poles:
+            urls = [photo.URL for photo in pole.Photos]
+            valid_urls = await check_images_exist(session, urls)
+        
+            pole.Photos = [photo for photo, is_valid in zip(pole.Photos, valid_urls) if is_valid]
+            if not pole.Photos:
+                continue 
+
+            results = await asyncio.gather(*[process_pole(pole, modelos, modelos_nome) for pole in request.Poles])
+            pole_results.extend(results)
+
+    summarized_results = await summarize_results(pole_results)
+    response = {str(solicitacao_id): summarized_results}
+    inserted_id = await save_to_postgresql(response, solicitacao_id, db)
+
+    if request.webhook_url:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(str(request.webhook_url), json=response) as resp:
+                if resp.status != 200:
+                    print(f"Falha ao enviar resultado para o webhook: {resp.status}")
+                else:
+                    print("Resultado enviado para o webhook")
+
+    del summarized_results, pole_results
+    return response
 
 
 def load_requested_models(models_selected):
@@ -48,45 +117,12 @@ def load_requested_models(models_selected):
     return list(modelos), list(modelos_nome)
 
 
-async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
-    query = insert(ArquivoModel).values(solicitacao_id=solicitacao_id, json=json)
-    await db.execute(query)
-    await db.commit()
-    return solicitacao_id
-
-
-async def predict_model(model, images):
-    async with predict_model_semaphore:
-        try:
-            result = await asyncio.to_thread(model.predict, images)
-            return result
-        except Exception as e:
-            logging.error(f"Erro na predição: {e}")
-            return e
-
-
-async def perform_ocr(image_url: str, reader) -> str:
-    try:
-        response = requests.get(image_url)
-        img = Image.open(BytesIO(response.content)).convert("RGB")
-        img = img.resize((img.width // 2, img.height // 2))
-        img_array = np.array(img)
-        result = reader.readtext(img_array, detail=0)  
-        text = ' '.join(result)
-        return text
-    except Exception as e:
-        logging.error(f"Erro ao realizar OCR na imagem {image_url}: {e}")
-        return ""
-
-
-async def check_image_exists(url: str) -> bool:
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.head(url) as response:
-                return response.status == 200
-    except Exception as e:
-        logging.error(f"Erro ao verificar URL {url}: {e}")
-        return False
+async def check_images_exist(session: aiohttp.ClientSession, urls: List[str]) -> List[bool]:
+    tasks = []
+    for url in urls:
+        tasks.append(session.head(url))
+    responses = await asyncio.gather(*tasks)
+    return [response.status == 200 for response in responses]
 
 
 async def process_pole(pole, modelos, modelos_nome) -> Dict:
@@ -126,53 +162,13 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     return output
 
 
-async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSession):
-    modelos, modelos_nome = load_requested_models(request.Models)
-    batch_size = 12
-    pole_results = []
-
-    for i in range(0, len(request.Poles), batch_size):
-        batch = request.Poles[i:i + batch_size]
-        for pole in batch:
-            unique_photos = []
-            for photo in pole.Photos:
-                if await check_image_exists(photo.URL):
-                    unique_photos.append(photo)
-                else:
-                    logging.warning(f"Imagem não encontrada ou URL inválida: {photo.URL}")
-            pole.Photos = unique_photos
-
-        pole_tasks = [process_pole(pole, modelos, modelos_nome) for pole in batch]
-        batch_results = await asyncio.gather(*pole_tasks)
-        pole_results.extend(batch_results)
-
-    summarized_results = await summarize_results(pole_results)
-    response = {str(solicitacao_id): summarized_results}
-    inserted_id = await save_to_postgresql(response, solicitacao_id, db)
-
-    if request.webhook_url:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(str(request.webhook_url), json=response) as resp:
-                if resp.status != 200:
-                    print(f"Falha ao enviar resultado para o webhook: {resp.status}")
-                else:
-                    print("Resultado enviado para o webhook")
-
-    del summarized_results, pole_results, batch_results, pole_tasks, batch
-    gc.collect()
-    return response
-
-
 async def summarize_results(pole_results):
-    reader = easyocr.Reader(['pt'])
-
     summary_data = defaultdict(lambda: defaultdict(float))
     summary_spec = defaultdict(lambda: defaultdict(float))
     photo_counts = defaultdict(lambda: defaultdict(int))
 
     for pole in pole_results:
         pole_id = pole["PoleId"]
-        accumulated_text = ""
         num_photos = len(pole["Photos"])
 
         for photo in pole["Photos"]:
@@ -180,14 +176,14 @@ async def summarize_results(pole_results):
             image_url = photo["URL"]
             counted_key_types = set()
 
-            texto_extraido = await perform_ocr(image_url, reader)
-            accumulated_text += f"{texto_extraido} "
-
             for key, value in resultado.items():
                 key_type = key.split('_')[1]
-
+                
                 if key_type not in counted_key_types:
                     photo_counts[pole_id][key_type] += 1
+                    counted_key_types.add(key_type)
+                if key.startswith("Esp"):
+                    photo_counts[pole_id][key_type] += 2
                     counted_key_types.add(key_type)
 
                 if isinstance(value, tuple):
@@ -198,13 +194,14 @@ async def summarize_results(pole_results):
                             summary_spec[pole_id][sub_key] = max(summary_spec[pole_id][sub_key], sub_value[1])
                         summary_data[pole_id][key_type] = max(summary_data[pole_id][key_type], sub_value[1])
 
-        if accumulated_text.strip():
-            summary_spec[pole_id]["Texto"] = accumulated_text.strip()
-
     summarized_results = []
 
     for pole_id in summary_data:
-        final_data = {k: v for k, v in summary_data[pole_id].items() if photo_counts[pole_id][k] > 1 or num_photos == 1}
+        final_data = {}
+        for k, v in summary_data[pole_id].items():
+            if photo_counts[pole_id][k] > 1 or num_photos == 1:
+                final_data[k] = v
+        
         final_spec = summary_spec.get(pole_id, {}).copy()
 
         for category in ["BT", "MT", "Poste"]:
@@ -222,54 +219,21 @@ async def summarize_results(pole_results):
     return summarized_results
 
 
-async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
-    async with start_detection_semaphore:
-        start_time = time.time()
-        async with db as session:
-            try:
-                detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id, db=session)
-                await update_status(solicitacao_id=solicitacao_id, status='Concluído', db=session)
-            except Exception as e:
-                await update_status(solicitacao_id=solicitacao_id, status='Falhou', db=session)
-                raise e
-            finally:
-                end_time = time.time()
-                gc.collect()
-                print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
-        return detection_results
+async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
+    query = insert(ArquivoModel).values(solicitacao_id=solicitacao_id, json=json)
+    await db.execute(query)
+    await db.commit()
+    return solicitacao_id
 
 
-@router.post("/", response_model=SolicitacaoCreate)
-async def criar_solicitacao(poles_request: PolesRequest, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_session), usuario_logado: UsuarioModel = Depends(get_current_user)):
-    start_time = time.time()
-
-    # Retira imagens repetidas
-    for pole in poles_request.Poles:
-        seen_urls = set()
-        unique_photos = []
-        for photo in pole.Photos:
-            if photo.URL not in seen_urls:
-                unique_photos.append(photo)
-                seen_urls.add(photo.URL)
-        pole.Photos = unique_photos
-    
-    total_poles = len(poles_request.Poles)
-    total_photos = sum(len(pole.Photos) for pole in poles_request.Poles)
-    if total_photos > 800:
-        raise HTTPException(status_code=400, detail="Número de fotos não pode ser maior que 800.")
-
-    nova_solicitacao: SolicitacaoModel = SolicitacaoModel(status="Em andamento", postes=total_poles, imagens=total_photos, usuario_id=usuario_logado.id)
-    async with db as session:
-        session.add(nova_solicitacao)
-        await session.commit()
-        await session.refresh(nova_solicitacao)
-        
-        background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
-
-        end_time = time.time()
-        gc.collect()
-        print(f"- Solicitação {nova_solicitacao.id} criada em: {end_time - start_time:.2f} segundos")
-        return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
+async def predict_model(model, images):
+    async with predict_model_semaphore:
+        try:
+            result = await asyncio.to_thread(model.predict, images) 
+            return result
+        except Exception as e:
+            logging.error(f"Erro na predição: {e}")
+            return e
 
 
 @router.get("/status/{solicitacao_id}")
