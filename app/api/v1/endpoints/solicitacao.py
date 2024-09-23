@@ -47,13 +47,13 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
 
         end_time = time.time()
-        print(f"- Solicitação {nova_solicitacao.id} criada em: {end_time - start_time:.2f} segundos")
+        print(f"criar_solicitacao - Tempo total: {end_time - start_time:.2f} segundos")
         return {"id": nova_solicitacao.id, "status": nova_solicitacao.status, "postes": nova_solicitacao.postes, "imagens": nova_solicitacao.imagens}
 
 
 async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: PolesRequest):
+    start_time = time.time()
     async with start_detection_semaphore:
-        start_time = time.time()
         async with db as session:
             try:
                 detection_results = await detect_objects(request=poles_request, solicitacao_id=solicitacao_id, db=session)
@@ -64,11 +64,12 @@ async def start_detection(solicitacao_id: int, db: AsyncSession, poles_request: 
             finally:
                 end_time = time.time()
                 gc.collect()
-                print(f"- Solicitação {solicitacao_id} concluída em: {end_time - start_time:.2f} segundos")
+                print(f"start_detection - Tempo total: {end_time - start_time:.2f} segundos")
         return detection_results
 
 
 async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSession):
+    start_time = time.time()
     modelos, modelos_nome = load_requested_models(request.Models)
     pole_results = []
 
@@ -97,10 +98,13 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
                     print("Resultado enviado para o webhook")
 
     del summarized_results, pole_results
+    end_time = time.time()
+    print(f"detect_objects - Tempo total: {end_time - start_time:.2f} segundos")
     return response
 
 
 def load_requested_models(models_selected):
+    start_time = time.time()
     available_models = {
         file.replace('model_', '').replace('.pt', ''): file
         for file in sorted(os.listdir('ia'))
@@ -113,22 +117,29 @@ def load_requested_models(models_selected):
         for model_name in models_selected
         if model_name in a_model
     ])
-
+    
+    end_time = time.time()
+    print(f"load_requested_models - Tempo total: {end_time - start_time:.2f} segundos")
     return list(modelos), list(modelos_nome)
 
 
 async def check_images_exist(session: aiohttp.ClientSession, urls: List[str]) -> List[bool]:
+    start_time = time.time()
     tasks = []
     for url in urls:
         tasks.append(session.head(url))
     responses = await asyncio.gather(*tasks)
+    end_time = time.time()
+    print(f"check_images_exist - Tempo total: {end_time - start_time:.2f} segundos")
     return [response.status == 200 for response in responses]
 
 
 async def process_pole(pole, modelos, modelos_nome) -> Dict:
+    start_time = time.time()
     images = [photo.URL for photo in pole.Photos] 
     photo_ids = [photo.PhotoId for photo in pole.Photos]
     
+    print('process_role', photo_ids)
     tasks = [predict_model(model, images) for model in modelos]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -159,10 +170,13 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
 
+    end_time = time.time()
+    print(f"process_pole - Tempo total: {end_time - start_time:.2f} segundos")
     return output
 
 
 async def summarize_results(pole_results):
+    start_time = time.time()
     summary_data = defaultdict(lambda: defaultdict(float))
     summary_spec = defaultdict(lambda: defaultdict(float))
     photo_counts = defaultdict(lambda: defaultdict(int))
@@ -170,6 +184,7 @@ async def summarize_results(pole_results):
     for pole in pole_results:
         pole_id = pole["PoleId"]
         num_photos = len(pole["Photos"])
+        print('summarized_results', pole_id, num_photos)
 
         for photo in pole["Photos"]:
             resultado = photo["Resultado"]
@@ -216,20 +231,28 @@ async def summarize_results(pole_results):
             "Especificidades": final_spec
         })
 
+    end_time = time.time()
+    print(f"summarize_results - Tempo total: {end_time - start_time:.2f} segundos")
     return summarized_results
 
 
 async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
+    start_time = time.time()
     query = insert(ArquivoModel).values(solicitacao_id=solicitacao_id, json=json)
     await db.execute(query)
     await db.commit()
+    end_time = time.time()
+    print(f"save_to_postgresql - Tempo total: {end_time - start_time:.2f} segundos")
     return solicitacao_id
 
 
 async def predict_model(model, images):
+    start_time = time.time()
     async with predict_model_semaphore:
         try:
             result = await asyncio.to_thread(model.predict, images) 
+            end_time = time.time()
+            print(f"predict_model - Tempo total: {end_time - start_time:.2f} segundos")
             return result
         except Exception as e:
             logging.error(f"Erro na predição: {e}")
