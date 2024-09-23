@@ -140,7 +140,7 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     photo_ids = [photo.PhotoId for photo in pole.Photos]
     
     print('process_role', photo_ids)
-    tasks = [predict_model(model, images) for model in modelos]
+    tasks = [predict_model(model, images, photo_ids) for model in modelos]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     pole_results = []
@@ -171,6 +171,7 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
 
     end_time = time.time()
+    print('process_role: end', photo_ids)
     print(f"process_pole - Tempo total: {end_time - start_time:.2f} segundos")
     return output
 
@@ -246,10 +247,11 @@ async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
     return solicitacao_id
 
 
-async def predict_model(model, images):
-    start_time = time.time()
+async def predict_model(model, images, photo_ids):
     async with predict_model_semaphore:
         try:
+            start_time = time.time()
+            print('predict_model', photo_ids)
             result = await asyncio.to_thread(model.predict, images) 
             end_time = time.time()
             print(f"predict_model - Tempo total: {end_time - start_time:.2f} segundos")
