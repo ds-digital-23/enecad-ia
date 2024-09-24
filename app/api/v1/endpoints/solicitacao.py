@@ -139,39 +139,47 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     images = [photo.URL for photo in pole.Photos] 
     photo_ids = [photo.PhotoId for photo in pole.Photos]
     
-    print('process_role', photo_ids)
-    tasks = [predict_model(model, images, photo_ids) for model in modelos]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    print('process_pole', photo_ids)
 
+    # Defina o tamanho do lote
+    batch_size = 5  # Ajuste conforme necessário
     pole_results = []
-    for idx, (photo_id, image) in enumerate(zip(photo_ids, images)):
-        pole_result = {}
 
-        for i, modelo_nome in enumerate(modelos_nome):
-            res = results[i][idx]
+    # Processar imagens em lotes
+    for i in range(0, len(images), batch_size):
+        batch_images = images[i:i + batch_size]
+        batch_photo_ids = photo_ids[i:i + batch_size]
 
-            if isinstance(res, Exception):
-                pole_result[modelo_nome] = "Não foi possível abrir esta imagem"
-            else:
-                if len(res.names) == 1:
-                    max_conf = round(max((box.conf.item() for box in res.boxes), default=0), 3)
-                    if max_conf > 0.0:
-                        pole_result[modelo_nome] = (max_conf > 0, max_conf)
+        # Chame predict_model para cada modelo em paralelo
+        tasks = [predict_model(model, batch_images, batch_photo_ids) for model in modelos]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Processar resultados para cada modelo
+        for model_idx, model_results in enumerate(results):
+            for idx, (photo_id, image) in enumerate(zip(batch_photo_ids, batch_images)):
+                pole_result = {}
+                res = model_results[idx]
+
+                if isinstance(res, Exception):
+                    pole_result[modelos_nome[model_idx]] = "Não foi possível abrir esta imagem"
                 else:
-                    class_confidences = {res.names[int(box.cls)]: (round(box.conf.item(), 3) > 0, round(box.conf.item(), 3)) for box in res.boxes}
-                    if class_confidences:
-                        pole_result[modelo_nome] = class_confidences
-        
-        pole_results.append({
-            "PhotoId": photo_id,
-            "URL": image,
-            "Resultado": pole_result,
-        })
+                    if len(res.names) == 1:
+                        max_conf = round(max((box.conf.item() for box in res.boxes), default=0), 3)
+                        if max_conf > 0.0:
+                            pole_result[modelos_nome[model_idx]] = (max_conf > 0, max_conf)
+                    else:
+                        class_confidences = {res.names[int(box.cls)]: (round(box.conf.item(), 3) > 0, round(box.conf.item(), 3)) for box in res.boxes}
+                        if class_confidences:
+                            pole_result[modelos_nome[model_idx]] = class_confidences
+                
+                pole_results.append({
+                    "PhotoId": photo_id,
+                    "URL": image,
+                    "Resultado": pole_result,
+                })
 
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
-
     end_time = time.time()
-    print('process_role: end', photo_ids)
     print(f"process_pole - Tempo total: {end_time - start_time:.2f} segundos")
     return output
 
@@ -247,15 +255,27 @@ async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
     return solicitacao_id
 
 
+# Dicionário para armazenar resultados de predições
+prediction_cache = {}
+
 async def predict_model(model, images, photo_ids):
     async with predict_model_semaphore:
         try:
             start_time = time.time()
-            print('predict_model', photo_ids)
-            result = await asyncio.to_thread(model.predict, images) 
+            results = []
+            for image, photo_id in zip(images, photo_ids):
+                # Verifique se a predição já foi feita para esta imagem
+                if (model, image) in prediction_cache:
+                    result = prediction_cache[(model, image)]
+                else:
+                    print(f'predict_model {photo_ids}')
+                    result = await asyncio.to_thread(model.predict, [image])
+                    prediction_cache[(model, image)] = result  # Armazena o resultado no cache
+
+                results.append(result)
             end_time = time.time()
             print(f"predict_model - Tempo total: {end_time - start_time:.2f} segundos")
-            return result
+            return results
         except Exception as e:
             logging.error(f"Erro na predição: {e}")
             return e
