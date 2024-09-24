@@ -75,16 +75,23 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
     pole_results = []
 
     async with aiohttp.ClientSession() as session:
-        for pole in request.Poles:
-            urls = [photo.URL for photo in pole.Photos]
-            valid_urls = await check_images_exist(session, urls)
+        # Coletar todas as URLs de uma vez
+        all_urls = [photo.URL for pole in request.Poles for photo in pole.Photos]
         
-            pole.Photos = [photo for photo, is_valid in zip(pole.Photos, valid_urls) if is_valid]
+        # Verificar a existência de todas as imagens de uma vez e obter apenas as válidas
+        valid_urls = await check_images_exist(session, all_urls)
+
+        # Filtrar as fotos válidas para cada poste
+        valid_url_set = set(valid_urls)  # Para facilitar a verificação
+        for pole in request.Poles:
+            pole.Photos = [photo for photo in pole.Photos if photo.URL in valid_url_set]
+            
             if not pole.Photos:
                 continue 
 
-            results = await asyncio.gather(*[process_pole(pole, modelos, modelos_nome) for pole in request.Poles])
-            pole_results.extend(results)
+        # Processar apenas postes válidos
+        results = await asyncio.gather(*[process_pole(pole, modelos, modelos_nome) for pole in request.Poles if pole.Photos])
+        pole_results.extend(results)
 
     summarized_results = await summarize_results(pole_results)
     response = {str(solicitacao_id): summarized_results}
@@ -124,15 +131,23 @@ def load_requested_models(models_selected):
     return list(modelos), list(modelos_nome)
 
 
-async def check_images_exist(session: aiohttp.ClientSession, urls: List[str]) -> List[bool]:
+async def check_images_exist(session: aiohttp.ClientSession, urls: List[str]) -> List[str]:
     start_time = time.time()
     tasks = []
+
+    # Criar uma tarefa para cada URL
     for url in urls:
         tasks.append(session.head(url))
+
+    # Executar todas as tarefas em paralelo
     responses = await asyncio.gather(*tasks)
+    
     end_time = time.time()
     print(f"Tempo total de check_images_exist: {end_time - start_time:.2f} segundos")
-    return [response.status == 200 for response in responses]
+    
+    # Retornar apenas as URLs que são válidas (status 200)
+    valid_urls = [url for url, response in zip(urls, responses) if response.status == 200]
+    return valid_urls
 
 
 async def process_pole(pole, modelos, modelos_nome) -> Dict:
