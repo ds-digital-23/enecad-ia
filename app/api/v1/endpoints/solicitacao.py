@@ -141,8 +141,8 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     
     print('process_pole', photo_ids)
 
-    # Defina o tamanho do lote
-    batch_size = 5  # Ajuste conforme necessário
+    # Defina um tamanho de lote menor
+    batch_size = 2  # Ajuste conforme necessário
     pole_results = []
 
     # Processar imagens em lotes
@@ -178,8 +178,11 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
                     "Resultado": pole_result,
                 })
 
+        gc.collect()  # Força a coleta de lixo após cada lote
+
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
     end_time = time.time()
+    print(f"process_pole - end: {photo_ids}")
     print(f"process_pole - Tempo total: {end_time - start_time:.2f} segundos")
     return output
 
