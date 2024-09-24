@@ -44,6 +44,7 @@ async def criar_solicitacao(poles_request: PolesRequest, background_tasks: Backg
         await session.commit()
         await session.refresh(nova_solicitacao)
         
+        gc.collect()
         background_tasks.add_task(start_detection, nova_solicitacao.id, session, poles_request)
 
         end_time = time.time()
@@ -105,7 +106,7 @@ async def detect_objects(request: PolesRequest, solicitacao_id: int, db: AsyncSe
                 else:
                     print("Resultado enviado para o webhook")
 
-    del summarized_results, pole_results
+    del summarized_results, pole_results, modelos, modelos_nome
     end_time = time.time()
     print(f"Tempo total de detect_objects: {end_time - start_time:.2f} segundos")
     return response
@@ -155,10 +156,10 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     images = [photo.URL for photo in pole.Photos] 
     photo_ids = [photo.PhotoId for photo in pole.Photos]
     
-    print('process_role: before', photo_ids)
+    print('process_role - all chunks:', photo_ids)
     tasks = [predict_model(model, images) for model in modelos]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    print('process_role: after', photo_ids)
+    print('process_role - each chunk:', photo_ids)
 
     pole_results = []
     for idx, (photo_id, image) in enumerate(zip(photo_ids, images)):
@@ -188,7 +189,6 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     output = {"PoleId": pole.PoleId, "Photos": pole_results}
 
     end_time = time.time()
-    print('process_role: end', photo_ids)
     print(f"Tempo total de process_pole: {end_time - start_time:.2f} segundos")
     return output
 
@@ -255,22 +255,16 @@ async def summarize_results(pole_results):
 
 
 async def save_to_postgresql(json: Dict, solicitacao_id: int, db: AsyncSession):
-    start_time = time.time()
     query = insert(ArquivoModel).values(solicitacao_id=solicitacao_id, json=json)
     await db.execute(query)
     await db.commit()
-    end_time = time.time()
-    print(f"Tempo total de save_to_postgresql: {end_time - start_time:.2f} segundos")
     return solicitacao_id
 
 
 async def predict_model(model, images):
     async with predict_model_semaphore:
         try:
-            start_time = time.time()
             result = await asyncio.to_thread(model.predict, images) 
-            end_time = time.time()
-            print(f"Tempo total de predict_model: {end_time - start_time:.2f} segundos")
             return result
         except Exception as e:
             logging.error(f"Erro na predição: {e}")
