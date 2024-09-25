@@ -16,8 +16,6 @@ from models.arquivo_model import ArquivoModel
 from models.usuario_model import UsuarioModel
 from schemas.solicitacao_schema import SolicitacaoCreate, PolesRequest
 from core.deps import get_session, get_current_user
-from PIL import Image
-from io import BytesIO
 
 
 
@@ -158,36 +156,17 @@ async def process_pole(pole, modelos, modelos_nome) -> Dict:
     images = [photo.URL for photo in pole.Photos] 
     photo_ids = [photo.PhotoId for photo in pole.Photos]
     
-    # Criar a pasta temp se não existir
-    os.makedirs("temp", exist_ok=True)
-
-    # Adicionando a manipulação de imagem
-    vertical_images = []
-    for photo_id, image_url in zip(photo_ids, images):
-        async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as resp:
-                if resp.status == 200:
-                    img = Image.open(BytesIO(await resp.read()))
-                    img = img.rotate(270, expand=True)  # Rotaciona a imagem para vertical
-                    img_path = f"temp/{photo_id}.jpeg"
-                    img.save(img_path)
-                    vertical_images.append(img_path)
-
     print('process_role - all chunks:', photo_ids)
-    tasks = [predict_model(model, vertical_images) for model in modelos]
+    tasks = [predict_model(model, images) for model in modelos]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     print('process_role - each chunk:', photo_ids)
-
-    # Deletar as imagens temporárias após o uso
-    for img_path in vertical_images:
-        if os.path.exists(img_path):
-            os.remove(img_path)
 
     pole_results = []
     for idx, (photo_id, image) in enumerate(zip(photo_ids, images)):
         pole_result = {}
 
         for i, modelo_nome in enumerate(modelos_nome):
+            print('======', modelo_nome, pole_results)
             res = results[i][idx]
 
             if isinstance(res, Exception):
@@ -233,6 +212,7 @@ async def summarize_results(pole_results):
 
             for key, value in resultado.items():
                 key_type = key.split('_')[1]
+                print(key_type, key, value)
                 
                 if key_type not in counted_key_types:
                     photo_counts[pole_id][key_type] += 1
@@ -260,6 +240,7 @@ async def summarize_results(pole_results):
         final_spec = summary_spec.get(pole_id, {}).copy()
 
         for category in ["BT", "MT", "Poste"]:
+            print('---', category)
             category_items = {k: v for k, v in final_spec.items() if category in k}
             if category_items:
                 max_item = max(category_items, key=category_items.get)
